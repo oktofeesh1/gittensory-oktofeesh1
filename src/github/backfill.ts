@@ -190,6 +190,61 @@ type GitHubOpenIssuesResponse = {
   errors?: Array<{ message?: string }>;
 };
 
+type GitHubOpenPullRequestsResponse = {
+  data?: {
+    repository?: {
+      pullRequests?: {
+        pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
+        nodes?: Array<{
+          number?: number;
+          title?: string;
+          state?: string;
+          url?: string;
+          body?: string | null;
+          createdAt?: string | null;
+          updatedAt?: string | null;
+          authorAssociation?: string | null;
+          author?: { login?: string | null } | null;
+          headRefName?: string | null;
+          baseRefName?: string | null;
+          headRefOid?: string | null;
+          labels?: { nodes?: Array<{ name?: string | null } | null> | null } | null;
+        } | null>;
+      };
+    } | null;
+    rateLimit?: { remaining?: number; resetAt?: string };
+  };
+  errors?: Array<{ message?: string }>;
+};
+
+type GitHubPullRequestDetailsResponse = {
+  data?: {
+    repository?: {
+      pullRequest?: {
+        files?: {
+          nodes?: Array<{
+            path?: string | null;
+            additions?: number | null;
+            deletions?: number | null;
+            changeType?: string | null;
+          } | null> | null;
+        } | null;
+        reviews?: {
+          nodes?: Array<{
+            databaseId?: number | null;
+            author?: { login?: string | null } | null;
+            state?: string | null;
+            authorAssociation?: string | null;
+            submittedAt?: string | null;
+          } | null> | null;
+        } | null;
+      } | null;
+    } | null;
+    rateLimit?: { remaining?: number; resetAt?: string };
+  };
+  errors?: Array<{ message?: string }>;
+};
+
 const MODE_LIMITS: Record<BackfillMode, BackfillLimits> = {
   light: {
     issues: 100,
@@ -835,6 +890,7 @@ async function backfillOpenPullRequestsSegment(
     {
       countPersisted: () => countOpenPullRequests(env, repo.fullName),
       reconcileOnComplete: (scanStartedAt) => markUnseenOpenPullRequestsClosed(env, repo.fullName, scanStartedAt),
+      ...(token ? { supplementOnUnderCount: (scanStartedAt: string) => supplementOpenPullRequestsFromGraphQl(env, repo, token, scanStartedAt), supplementDescription: "open pull request row(s)" } : {}),
     },
   );
 }
@@ -885,6 +941,7 @@ async function fetchPagedSegment<T>(
     countPersisted?: () => Promise<number>;
     reconcileOnComplete?: (scanStartedAt: string) => Promise<number>;
     supplementOnUnderCount?: (scanStartedAt: string) => Promise<number>;
+    supplementDescription?: string;
   } = {},
 ): Promise<{ status: RepoSyncSegmentRecord["status"]; segment: RepoSyncSegmentRecord }> {
   const previous = mode === "resume" ? await getRepoSyncSegment(env, repo.fullName, segmentName) : null;
@@ -934,6 +991,12 @@ async function fetchPagedSegment<T>(
     }
   }
   let fetchedCount = options.countPersisted ? await options.countPersisted() : priorFetched + fetchedThisRun;
+  if ((status === "error" || status === "partial") && expectedCount !== undefined && fetchedCount >= expectedCount) {
+    status = "complete";
+    hasMore = false;
+    nextCursor = undefined;
+    warnings.push(`GitHub segment ${segmentName} met the expected total after a late page error; preserving complete persisted coverage.`);
+  }
   if (status === "complete") {
     if (hasMore && options.progressiveHistory) {
       status = "sampled";
@@ -976,6 +1039,7 @@ async function supplementUnderCountIfNeeded(
   options: {
     countPersisted?: () => Promise<number>;
     supplementOnUnderCount?: (scanStartedAt: string) => Promise<number>;
+    supplementDescription?: string;
   },
   scanStartedAt: string,
   fetchedCount: number,
@@ -985,7 +1049,7 @@ async function supplementUnderCountIfNeeded(
   if (expectedCount === undefined || fetchedCount >= expectedCount || !options.supplementOnUnderCount) return fetchedCount;
   try {
     const supplemented = await options.supplementOnUnderCount(scanStartedAt);
-    if (supplemented > 0) warnings.push(`Supplemented ${supplemented} open issue row(s) from GitHub GraphQL because REST open issue pagination undercounted the authoritative total.`);
+    if (supplemented > 0) warnings.push(`Supplemented ${supplemented} ${options.supplementDescription ?? "open issue row(s)"} from GitHub GraphQL because REST pagination undercounted the authoritative total.`);
     return options.countPersisted ? await options.countPersisted() : fetchedCount + supplemented;
   } catch (error) {
     warnings.push(`GitHub GraphQL supplement failed after REST undercount: ${errorMessage(error)}`);
@@ -1041,6 +1105,63 @@ async function supplementOpenIssuesFromGraphQl(env: Env, repo: RepositoryRecord,
     }
     if (!issues?.pageInfo?.hasNextPage) break;
     after = `, after: ${JSON.stringify(issues.pageInfo.endCursor)}`;
+  }
+  return supplemented;
+}
+
+async function supplementOpenPullRequestsFromGraphQl(env: Env, repo: RepositoryRecord, token: string, seenOpenAt: string): Promise<number> {
+  const existingNumbers = new Set((await listOpenPullRequests(env, repo.fullName)).map((pr) => pr.number));
+  const { owner, name } = repoParts(repo.fullName);
+  let after = "";
+  let supplemented = 0;
+  for (;;) {
+    const query = `query GittensoryOpenPullRequestsSupplement {
+      repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) {
+        pullRequests(states: OPEN, first: 100${after}, orderBy: { field: CREATED_AT, direction: ASC }) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            number
+            title
+            state
+            url
+            body
+            createdAt
+            updatedAt
+            authorAssociation
+            author { login }
+            headRefName
+            baseRefName
+            headRefOid
+            labels(first: 30) { nodes { name } }
+          }
+        }
+      }
+      rateLimit { remaining resetAt }
+    }`;
+    const response = await githubGraphQl<GitHubOpenPullRequestsResponse>(env, query, token);
+    const pullRequests = response.data?.repository?.pullRequests;
+    for (const pr of pullRequests?.nodes ?? []) {
+      if (!pr?.number || existingNumbers.has(pr.number)) continue;
+      const payload: GitHubPullRequestPayload = {
+        number: pr.number,
+        title: pr.title ?? `Pull request #${pr.number}`,
+        state: String(pr.state ?? "OPEN").toLowerCase(),
+        labels: (pr.labels?.nodes ?? []).flatMap((label) => (label?.name ? [{ name: label.name }] : [])),
+        ...(pr.url ? { html_url: pr.url } : {}),
+        ...(pr.createdAt === undefined ? {} : { created_at: pr.createdAt }),
+        ...(pr.updatedAt === undefined ? {} : { updated_at: pr.updatedAt }),
+        ...(pr.body === undefined ? {} : { body: pr.body }),
+        ...(pr.author?.login ? { user: { login: pr.author.login } } : {}),
+        ...(pr.authorAssociation ? { author_association: pr.authorAssociation } : {}),
+        head: { ...(pr.headRefOid ? { sha: pr.headRefOid } : {}), ...(pr.headRefName ? { ref: pr.headRefName } : {}) },
+        base: { ...(pr.baseRefName ? { ref: pr.baseRefName } : {}) },
+      };
+      await upsertPullRequestFromGitHub(env, repo.fullName, payload, { seenOpenAt });
+      existingNumbers.add(pr.number);
+      supplemented += 1;
+    }
+    if (!pullRequests?.pageInfo?.hasNextPage || !pullRequests.pageInfo.endCursor) break;
+    after = `, after: ${JSON.stringify(pullRequests.pageInfo.endCursor)}`;
   }
   return supplemented;
 }
@@ -1334,19 +1455,7 @@ async function fetchAndStorePullRequestDetails(
   token: string | undefined,
   warnings: string[],
 ): Promise<void> {
-  const [files, reviews, checks] = await Promise.all([
-    fetchPullRequestFiles(env, repoFullName, pr.number, token, warnings),
-    githubJson<GitHubReviewPayload[]>(env, repoFullName, `/pulls/${pr.number}/reviews?per_page=100`, token).catch((error) => {
-      warnings.push(`Review sync failed for #${pr.number}: ${errorMessage(error)}`);
-      return [];
-    }),
-    pr.headSha
-      ? githubJson<{ check_runs?: GitHubCheckRunPayload[] }>(env, repoFullName, `/commits/${pr.headSha}/check-runs?per_page=100`, token).catch((error) => {
-          warnings.push(`Check sync failed for #${pr.number}: ${errorMessage(error)}`);
-          return { check_runs: [] };
-        })
-      : Promise.resolve({ check_runs: [] }),
-  ]);
+  const [files, reviews, checks] = await Promise.all([fetchPullRequestFiles(env, repoFullName, pr.number, token, warnings), fetchPullRequestReviews(env, repoFullName, pr.number, token, warnings), fetchPullRequestChecks(env, repoFullName, pr, token)]);
 
   for (const file of files) {
     await upsertPullRequestFile(env, {
@@ -1397,10 +1506,89 @@ async function fetchPullRequestFiles(
   token: string | undefined,
   warnings: string[],
 ): Promise<GitHubFilePayload[]> {
-  return githubJson<GitHubFilePayload[]>(env, repoFullName, `/pulls/${pullNumber}/files?per_page=100`, token).catch((error) => {
-    warnings.push(`File sync failed for #${pullNumber}: ${errorMessage(error)}`);
-    return [];
+  const files = await githubJson<GitHubFilePayload[]>(env, repoFullName, `/pulls/${pullNumber}/files?per_page=100`, token).catch(() => undefined);
+  if (files) return files;
+  const fallback = token ? await fetchPullRequestDetailsFromGraphQl(env, repoFullName, pullNumber, token).catch(() => undefined) : undefined;
+  if (fallback) return fallback.files;
+  warnings.push(`File sync failed for #${pullNumber}: GitHub REST and GraphQL detail fetches failed.`);
+  return [];
+}
+
+async function fetchPullRequestReviews(
+  env: Env,
+  repoFullName: string,
+  pullNumber: number,
+  token: string | undefined,
+  warnings: string[],
+): Promise<GitHubReviewPayload[]> {
+  const reviews = await githubJson<GitHubReviewPayload[]>(env, repoFullName, `/pulls/${pullNumber}/reviews?per_page=100`, token).catch(() => undefined);
+  if (reviews) return reviews;
+  const fallback = token ? await fetchPullRequestDetailsFromGraphQl(env, repoFullName, pullNumber, token).catch(() => undefined) : undefined;
+  if (fallback) return fallback.reviews;
+  warnings.push(`Review sync failed for #${pullNumber}: GitHub REST and GraphQL detail fetches failed.`);
+  return [];
+}
+
+async function fetchPullRequestChecks(
+  env: Env,
+  repoFullName: string,
+  pr: PullRequestRecord,
+  token: string | undefined,
+): Promise<{ check_runs?: GitHubCheckRunPayload[] }> {
+  if (!pr.headSha) return { check_runs: [] };
+  return githubJson<{ check_runs?: GitHubCheckRunPayload[] }>(env, repoFullName, `/commits/${pr.headSha}/check-runs?per_page=100`, token).catch(() => ({ check_runs: [] }));
+}
+
+async function fetchPullRequestDetailsFromGraphQl(
+  env: Env,
+  repoFullName: string,
+  pullNumber: number,
+  token: string,
+): Promise<{ files: GitHubFilePayload[]; reviews: GitHubReviewPayload[] }> {
+  const { owner, name } = repoParts(repoFullName);
+  const query = `query GittensoryPullRequestDetails {
+    repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) {
+      pullRequest(number: ${pullNumber}) {
+        files(first: 100) {
+          nodes { path additions deletions changeType }
+        }
+        reviews(first: 100) {
+          nodes { databaseId author { login } state authorAssociation submittedAt }
+        }
+      }
+    }
+    rateLimit { remaining resetAt }
+  }`;
+  const response = await githubGraphQl<GitHubPullRequestDetailsResponse>(env, query, token);
+  const pullRequest = response.data?.repository?.pullRequest;
+  if (!pullRequest) throw new GitHubApiError(`GitHub GraphQL failed for ${repoFullName} pull request #${pullNumber}: pull request not found`, 404, null, null);
+  const files: GitHubFilePayload[] = (pullRequest.files?.nodes ?? []).flatMap((file) => {
+    if (!file?.path) return [];
+    const additions = Number(file.additions ?? 0);
+    const deletions = Number(file.deletions ?? 0);
+    return [
+      {
+        filename: file.path,
+        status: String(file.changeType ?? "modified").toLowerCase(),
+        additions,
+        deletions,
+        changes: additions + deletions,
+      },
+    ];
   });
+  const reviews: GitHubReviewPayload[] = (pullRequest.reviews?.nodes ?? []).flatMap((review) => {
+    if (!review?.databaseId) return [];
+    return [
+      {
+        id: review.databaseId,
+        ...(review.author?.login ? { user: { login: review.author.login } } : {}),
+        ...(review.state ? { state: review.state } : {}),
+        ...(review.authorAssociation ? { author_association: review.authorAssociation } : {}),
+        ...(review.submittedAt === undefined ? {} : { submitted_at: review.submittedAt }),
+      },
+    ];
+  });
+  return { files, reviews };
 }
 
 async function upsertContributorStats(

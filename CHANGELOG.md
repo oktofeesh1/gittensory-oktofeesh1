@@ -65,5 +65,7 @@
 
 - Use first-level api domain
 
+- Fall back from scoped public token 404s
+
 
 

@@ -667,7 +667,7 @@ describe("GitHub backfill", () => {
         });
       }
       if (url.includes("/labels?")) return Response.json([]);
-      if (url.includes("/issues?") && url.includes("page=1")) {
+      if (url.includes("/issues?") && new URL(url).searchParams.get("page") === "1") {
         return Response.json(
           Array.from({ length: 100 }, (_, index) => ({ number: index + 1, title: `Issue ${index + 1}`, state: "open", user: { login: "reporter" }, labels: [], body: "" })),
           { headers: { link: '<https://api.github.com/repositories/1/issues?page=2>; rel="next"' } },
@@ -893,8 +893,8 @@ describe("GitHub backfill", () => {
               data: {
                 repository: {
                   issues: {
-                    pageInfo: { hasNextPage: false, endCursor: null },
-                    nodes: [{ number: 3, state: "OPEN", labels: { nodes: [null] } }, null],
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                  nodes: [{ number: 3, state: "OPEN", labels: { nodes: [null] } }, { number: 4 }, null],
                   },
                 },
               },
@@ -925,7 +925,7 @@ describe("GitHub backfill", () => {
             },
           });
         }
-        return githubTotalsResponse({ openIssues: 3, openPullRequests: 0, mergedPullRequests: 0, closedPullRequests: 0, labels: 0 });
+        return githubTotalsResponse({ openIssues: 4, openPullRequests: 0, mergedPullRequests: 0, closedPullRequests: 0, labels: 0 });
       }
       if (url.includes("/issues?")) return Response.json([{ number: 1, title: "REST issue", state: "open", user: { login: "reporter" }, labels: [], body: "" }]);
       return Response.json([]);
@@ -933,12 +933,13 @@ describe("GitHub backfill", () => {
 
     const result = await backfillRepositorySegment(env, { repoFullName: "JSONbored/gittensory", segment: "open_issues", mode: "full", force: true });
 
-    expect(result).toMatchObject({ status: "complete", fetchedCount: 3, expectedCount: 3 });
-    expect(result.warnings).toEqual(expect.arrayContaining([expect.stringContaining("Supplemented 2 open issue")]));
+    expect(result).toMatchObject({ status: "complete", fetchedCount: 4, expectedCount: 4 });
+    expect(result.warnings).toEqual(expect.arrayContaining([expect.stringContaining("Supplemented 3 open issue")]));
     expect(await listIssues(env, "JSONbored/gittensory")).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ number: 2, title: "GraphQL-only issue", labels: ["bug"] }),
         expect.objectContaining({ number: 3, title: "Issue #3", labels: [] }),
+        expect.objectContaining({ number: 4, title: "Issue #4", state: "open" }),
       ]),
     );
   });
@@ -994,6 +995,70 @@ describe("GitHub backfill", () => {
     expect(result.warnings.join("\n")).not.toContain("Supplemented");
   });
 
+  it("supplements REST open PR undercounts from GitHub GraphQL before marking completeness", async () => {
+    const env = createTestEnv({ GITHUB_PUBLIC_TOKEN: "public-token" });
+    await seedRegisteredRepo(env);
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input.toString();
+      if (url === "https://api.github.com/graphql") {
+        const query = JSON.parse(String(init?.body ?? "{}")).query as string;
+        if (query.includes("GittensoryOpenPullRequestsSupplement")) {
+          if (query.includes("after:")) {
+            return Response.json({
+              data: {
+                repository: {
+                  pullRequests: {
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                    nodes: [{ number: 12 }],
+                  },
+                },
+              },
+            });
+          }
+          return Response.json({
+            data: {
+              repository: {
+                pullRequests: {
+                  pageInfo: { hasNextPage: true, endCursor: "cursor-1" },
+                  nodes: [
+                    { number: 10, title: "REST PR", state: "OPEN", labels: { nodes: [] } },
+                    {
+                      number: 11,
+                      title: "GraphQL-only PR",
+                      state: "OPEN",
+                      url: "https://github.com/JSONbored/gittensory/pull/11",
+                      body: "GraphQL supplement",
+                      author: { login: "oktofeesh1" },
+                      authorAssociation: "NONE",
+                      headRefName: "feature",
+                      baseRefName: "main",
+                      headRefOid: "abc123",
+                      labels: { nodes: [{ name: "bug" }] },
+                    },
+                  ],
+                },
+              },
+              rateLimit: { remaining: 4999, resetAt: "2026-05-25T16:00:00Z" },
+            },
+          });
+        }
+        return githubTotalsResponse({ openIssues: 0, openPullRequests: 3, mergedPullRequests: 0, closedPullRequests: 0, labels: 0 });
+      }
+      if (url.includes("/pulls?state=open")) return Response.json([{ number: 10, title: "REST PR", state: "open", user: { login: "oktofeesh1" }, labels: [], body: "" }]);
+      return Response.json([]);
+    });
+
+    const result = await backfillRepositorySegment(env, { repoFullName: "JSONbored/gittensory", segment: "open_pull_requests", mode: "full", force: true });
+
+    expect(result).toMatchObject({ status: "complete", fetchedCount: 3, expectedCount: 3 });
+    expect(result.warnings).toEqual(expect.arrayContaining([expect.stringContaining("Supplemented 2 open pull request")]));
+    expect(await listPullRequests(env, "JSONbored/gittensory")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ number: 11, title: "GraphQL-only PR", labels: ["bug"], headSha: "abc123", headRef: "feature", baseRef: "main" }),
+      ]),
+    );
+  });
+
   it("reports fetched open issue count from persisted rows so repeated segment jobs cannot double count", async () => {
     const env = createTestEnv({ GITHUB_PUBLIC_TOKEN: "public-token" });
     await seedRegisteredRepo(env);
@@ -1009,6 +1074,71 @@ describe("GitHub backfill", () => {
 
     expect(repeated).toMatchObject({ status: "complete", fetchedCount: 1, expectedCount: 1 });
     expect(await listIssues(env, "JSONbored/gittensory")).toHaveLength(1);
+  });
+
+  it("keeps a segment complete when a late pagination error happens after expected coverage is already persisted", async () => {
+    const env = createTestEnv({ GITHUB_PUBLIC_TOKEN: "public-token" });
+    await seedRegisteredRepo(env);
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url === "https://api.github.com/graphql") return githubTotalsResponse({ openIssues: 0, openPullRequests: 0, mergedPullRequests: 0, closedPullRequests: 0, labels: 1 });
+      if (url.includes("/labels?") && new URL(url).searchParams.get("page") === "1") {
+        return Response.json([{ name: "signal", color: "00ff00", description: "Signal" }], {
+          headers: { link: '<https://api.github.com/repositories/1/labels?page=2>; rel="next"' },
+        });
+      }
+      if (url.includes("/labels?") && new URL(url).searchParams.get("page") === "2") return new Response("late failure", { status: 500 });
+      return Response.json([]);
+    });
+
+    const result = await backfillRepositorySegment(env, { repoFullName: "JSONbored/gittensory", segment: "labels", mode: "full", force: true });
+
+    expect(result).toMatchObject({ status: "complete", fetchedCount: 1, expectedCount: 1 });
+    expect(result.warnings).toEqual(expect.arrayContaining([expect.stringContaining("met the expected total after a late page error")]));
+  });
+
+  it("marks a current open-data segment partial when reconciliation removes stale rows below expected totals", async () => {
+    const env = createTestEnv({ GITHUB_PUBLIC_TOKEN: "public-token" });
+    await seedRegisteredRepo(env);
+    await upsertIssueFromGitHub(
+      env,
+      "JSONbored/gittensory",
+      {
+        number: 99,
+        title: "Stale issue",
+        state: "open",
+        user: { login: "reporter" },
+        labels: [],
+        body: "",
+      },
+      { seenOpenAt: "2026-01-01T00:00:00.000Z" },
+    );
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input.toString();
+      if (url === "https://api.github.com/graphql") {
+        const query = JSON.parse(String(init?.body ?? "{}")).query as string;
+        if (query.includes("GittensoryOpenIssuesSupplement")) {
+          return Response.json({
+            data: {
+              repository: {
+                issues: {
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                  nodes: [{ number: 1, title: "Fresh issue", state: "OPEN", labels: { nodes: [] } }],
+                },
+              },
+            },
+          });
+        }
+        return githubTotalsResponse({ openIssues: 2, openPullRequests: 0, mergedPullRequests: 0, closedPullRequests: 0, labels: 0 });
+      }
+      if (url.includes("/issues?")) return Response.json([{ number: 1, title: "Fresh issue", state: "open", user: { login: "reporter" }, labels: [], body: "" }]);
+      return Response.json([]);
+    });
+
+    const result = await backfillRepositorySegment(env, { repoFullName: "JSONbored/gittensory", segment: "open_issues", mode: "full", force: true });
+
+    expect(result).toMatchObject({ status: "partial", fetchedCount: 1, expectedCount: 2 });
+    expect(result.warnings).toEqual(expect.arrayContaining([expect.stringContaining("Marked 1 stale open issue"), expect.stringContaining("below expected total 2")]));
   });
 
   it("reconciles stale open rows after a complete current open-data crawl", async () => {
@@ -1281,6 +1411,90 @@ describe("GitHub backfill", () => {
 
     expect(result).toMatchObject({ status: "sampled", fetchedCount: 10, expectedCount: 2000 });
     expect(await listRecentMergedPullRequests(env, "JSONbored/gittensory")).toHaveLength(10);
+  });
+
+  it("hydrates PR files and reviews through GraphQL when public-token REST detail endpoints are hidden", async () => {
+    const env = createTestEnv({ GITHUB_PUBLIC_TOKEN: "public-token" });
+    await seedRegisteredRepo(env);
+    await upsertPullRequestFromGitHub(env, "JSONbored/gittensory", {
+      number: 10,
+      title: "Open PR",
+      state: "open",
+      user: { login: "oktofeesh1" },
+      head: { sha: "abc" },
+      labels: [],
+      body: "",
+    });
+    await upsertPullRequestFromGitHub(env, "JSONbored/gittensory", {
+      number: 11,
+      title: "Open PR without head SHA",
+      state: "open",
+      user: { login: "oktofeesh1" },
+      labels: [],
+      body: "",
+    });
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input.toString();
+      if (url === "https://api.github.com/graphql") {
+        const query = JSON.parse(String(init?.body ?? "{}")).query as string;
+        if (query.includes("GittensoryPullRequestDetails")) {
+          return Response.json({
+            data: {
+              repository: {
+                pullRequest: {
+                  files: { nodes: [{ path: "src/signal.ts", additions: 3, deletions: 1, changeType: "MODIFIED" }, { path: "README.md" }, { additions: 1 }, null] },
+                  reviews: { nodes: [{ databaseId: 44, author: { login: "maintainer" }, state: "APPROVED", authorAssociation: "MEMBER", submittedAt: "2026-05-25T00:00:00Z" }, { databaseId: 45 }, {}, null] },
+                },
+              },
+              rateLimit: { remaining: 4999, resetAt: "2026-05-25T16:00:00Z" },
+            },
+          });
+        }
+      }
+      if (url.includes("/pulls/10/files") || url.includes("/pulls/10/reviews")) return new Response("", { status: 404 });
+      if (url.includes("/pulls/11/files") || url.includes("/pulls/11/reviews")) return Response.json([]);
+      if (url.includes("/commits/abc/check-runs")) return Response.json({});
+      return Response.json([]);
+    });
+
+    const result = await backfillOpenPullRequestDetails(env, { repoFullName: "JSONbored/gittensory", mode: "full", cursor: 0 });
+
+    expect(result).toMatchObject({ status: "complete", processed: 2, warnings: [] });
+    expect(await listPullRequestFiles(env, "JSONbored/gittensory", 10)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ path: "src/signal.ts", additions: 3, deletions: 1, changes: 4 }), expect.objectContaining({ path: "README.md", status: "modified", changes: 0 })]),
+    );
+    expect(await listPullRequestReviews(env, "JSONbored/gittensory", 10)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "JSONbored/gittensory#10#44", reviewerLogin: "maintainer", state: "APPROVED" }), expect.objectContaining({ id: "JSONbored/gittensory#10#45", state: "UNKNOWN" })]),
+    );
+  });
+
+  it("records partial PR detail state when REST and GraphQL cannot load a pull request", async () => {
+    const env = createTestEnv({ GITHUB_PUBLIC_TOKEN: "public-token" });
+    await seedRegisteredRepo(env);
+    await upsertPullRequestFromGitHub(env, "JSONbored/gittensory", {
+      number: 12,
+      title: "Unavailable PR",
+      state: "open",
+      user: { login: "oktofeesh1" },
+      head: { sha: "missing" },
+      labels: [],
+      body: "",
+    });
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input.toString();
+      if (url === "https://api.github.com/graphql") {
+        const query = JSON.parse(String(init?.body ?? "{}")).query as string;
+        if (query.includes("GittensoryPullRequestDetails")) return Response.json({ data: { repository: { pullRequest: null } } });
+      }
+      if (url.includes("/pulls/12/files") || url.includes("/pulls/12/reviews")) return new Response("", { status: 404 });
+      if (url.includes("/commits/missing/check-runs")) return Response.json({});
+      return Response.json([]);
+    });
+
+    const result = await backfillOpenPullRequestDetails(env, { repoFullName: "JSONbored/gittensory", mode: "full", cursor: 0 });
+
+    expect(result).toMatchObject({ status: "partial", processed: 1 });
+    expect(result.warnings.join("\n")).toMatch(/File sync failed|Review sync failed/);
   });
 
   it("hydrates open PR details in small batches and records partial detail failures", async () => {
