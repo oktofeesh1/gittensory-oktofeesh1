@@ -97,6 +97,7 @@ MAX_CODE_DENSITY_MULTIPLIER = 1.15
     const refreshed = await refreshScoringModelSnapshot(env);
 
     expect(refreshed.activeModel).toBe("current_density_model");
+    expect(refreshed.constants.MAX_CONTRIBUTION_BONUS).toBe(25);
     expect(refreshed.constants.SRC_TOK_SATURATION_SCALE).toBe(58);
     expect(refreshed.warnings).not.toEqual(expect.arrayContaining([expect.stringContaining("density-era indicators")]));
   });
@@ -107,7 +108,7 @@ MAX_CODE_DENSITY_MULTIPLIER = 1.15
       activeModel: "pending_saturation_model",
       constants: {
         ...snapshot.constants,
-        MAX_CONTRIBUTION_BONUS: 5,
+        MAX_CONTRIBUTION_BONUS: 25,
         SRC_TOK_SATURATION_SCALE: 58,
       },
     };
@@ -128,6 +129,7 @@ MAX_CODE_DENSITY_MULTIPLIER = 1.15
 
     expect(preview.activeModel).toBe("pending_saturation_model");
     expect(preview.scoreEstimate.baseScore).toBeCloseTo(20.803, 3);
+    expect(preview.scoreEstimate.contributionBonus).toBe(5);
     expect(preview.scoreEstimate.pendingSaturationScore).toBe(preview.scoreEstimate.baseScore);
     expect(preview.scoreEstimate.estimatedMergedScore).toBeCloseTo(33.2016, 3);
     expect(preview.gates.baseTokenGatePassed).toBe(true);
@@ -363,6 +365,7 @@ MAX_CODE_DENSITY_MULTIPLIER = 1.15
     vi.stubGlobal("fetch", async () => new Response("missing", { status: 404 }));
     const fallback = await refreshScoringModelSnapshot(fallbackEnv);
     expect(fallback.sourceKind).toBe("fallback");
+    expect(fallback.activeModel).toBe("unknown");
     expect(fallback.warnings.join(" ")).toMatch(/fetch failed/i);
     expect(fallback.constants.OSS_EMISSION_SHARE).toBe(0.9);
 
@@ -371,5 +374,6 @@ MAX_CODE_DENSITY_MULTIPLIER = 1.15
     });
     const thrownFallback = await refreshScoringModelSnapshot(createTestEnv());
     expect(thrownFallback.sourceKind).toBe("fallback");
+    expect(thrownFallback.activeModel).toBe("unknown");
   });
 });

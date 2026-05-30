@@ -11,7 +11,7 @@ export const DEFAULT_SCORING_CONSTANTS: Record<string, number> = {
   ISSUE_TREASURY_EMISSION_SHARE: 0.1,
   PR_LOOKBACK_DAYS: 30,
   MERGED_PR_BASE_SCORE: 25,
-  MAX_CONTRIBUTION_BONUS: 5,
+  MAX_CONTRIBUTION_BONUS: 25,
   CONTRIBUTION_SCORE_FOR_FULL_BONUS: 1500,
   TEST_FILE_CONTRIBUTION_WEIGHT: 0.05,
   MIN_VALID_MERGED_PRS: 3,
@@ -50,7 +50,7 @@ export async function refreshScoringModelSnapshot(env: Env): Promise<ScoringMode
 
   let sourceKind: ScoringModelSnapshotRecord["sourceKind"] = "raw-github";
   let constants = { ...DEFAULT_SCORING_CONSTANTS };
-  let activeModelConstants = constants;
+  let activeModelConstants: Record<string, number> = {};
   let constantsPayload: Record<string, JsonValue> = {};
 
   if (constantsResult.ok) {

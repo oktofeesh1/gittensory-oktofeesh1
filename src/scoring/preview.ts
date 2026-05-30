@@ -211,18 +211,20 @@ function computeScoreCore(
   const densityMultiplier = clamp(rawDensity || 0, 0, constant(constants, "MAX_CODE_DENSITY_MULTIPLIER", 1.15));
   const densityTokenGatePassed = sourceTokenScore >= constant(constants, "MIN_TOKEN_SCORE_FOR_BASE_SCORE", 5);
   const baseTokenGatePassed = snapshot.activeModel === "pending_saturation_model" ? sourceTokenScore > 0 : densityTokenGatePassed;
-  const contributionBonus =
+  const densityContributionBonus =
     clamp(totalTokenScore / constant(constants, "CONTRIBUTION_SCORE_FOR_FULL_BONUS", 1500), 0, 1) *
     constant(constants, "MAX_CONTRIBUTION_BONUS", 25);
+  const saturationContributionBonusValue = saturationContributionBonus(totalTokenScore, constants);
   const saturationBaseScore = saturationScore(sourceTokenScore, totalTokenScore, constants);
   const densityBaseScore =
-    (densityTokenGatePassed ? constant(constants, "MERGED_PR_BASE_SCORE", 25) * densityMultiplier : 0) + contributionBonus;
+    (densityTokenGatePassed ? constant(constants, "MERGED_PR_BASE_SCORE", 25) * densityMultiplier : 0) + densityContributionBonus;
   const baseScore =
     fixedBaseScore !== undefined
       ? fixedBaseScore
       : snapshot.activeModel === "pending_saturation_model"
         ? saturationBaseScore
         : densityBaseScore;
+  const activeContributionBonus = snapshot.activeModel === "pending_saturation_model" ? saturationContributionBonusValue : densityContributionBonus;
   const labelMultiplier = selectLabelMultiplier(input.labels ?? [], config?.labelMultipliers ?? {}, config?.defaultLabelMultiplier ?? 1);
   const issueMultiplier = selectIssueMultiplier(input.linkedIssueMode ?? "none", constants);
   const credibilityObserved = clamp(input.credibility ?? inferCredibility(contributorEvidence), 0, 1);
@@ -251,7 +253,7 @@ function computeScoreCore(
     scoreEstimate: {
       baseScore: roundScore(baseScore),
       densityMultiplier: roundScore(densityMultiplier),
-      contributionBonus: roundScore(contributionBonus),
+      contributionBonus: roundScore(activeContributionBonus),
       labelMultiplier,
       issueMultiplier,
       credibilityMultiplier: roundScore(credibilityMultiplier),
@@ -548,11 +550,15 @@ function constant(constants: Record<string, number>, key: string, fallback: numb
 
 function saturationScore(sourceTokenScore: number, totalTokenScore: number, constants: Record<string, number>): number {
   const scale = Math.max(constant(constants, "SRC_TOK_SATURATION_SCALE", 58), 1);
-  const contributionBonusCap = Math.min(constant(constants, "MAX_CONTRIBUTION_BONUS", 5), 5);
   return (
     constant(constants, "MERGED_PR_BASE_SCORE", 25) * (1 - Math.exp(-sourceTokenScore / scale)) +
-    clamp(totalTokenScore / constant(constants, "CONTRIBUTION_SCORE_FOR_FULL_BONUS", 1500), 0, 1) * contributionBonusCap
+    saturationContributionBonus(totalTokenScore, constants)
   );
+}
+
+function saturationContributionBonus(totalTokenScore: number, constants: Record<string, number>): number {
+  const contributionBonusCap = Math.min(constant(constants, "MAX_CONTRIBUTION_BONUS", 5), 5);
+  return clamp(totalTokenScore / constant(constants, "CONTRIBUTION_SCORE_FOR_FULL_BONUS", 1500), 0, 1) * contributionBonusCap;
 }
 
 function nonNegative(value: number | undefined): number {
