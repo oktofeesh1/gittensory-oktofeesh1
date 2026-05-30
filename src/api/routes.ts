@@ -1296,6 +1296,7 @@ async function loadContributorFastContext(env: Env, login: string) {
     pullRequests: contributorPullRequests,
     issues: contributorIssues,
     repoStats,
+    cachedRepoStats,
   });
   return {
     login,

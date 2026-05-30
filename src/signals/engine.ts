@@ -1304,6 +1304,7 @@ export function buildContributorOutcomeHistory(args: {
   pullRequests: PullRequestRecord[];
   issues: IssueRecord[];
   repoStats: ContributorRepoStatRecord[];
+  cachedRepoStats?: ContributorRepoStatRecord[] | undefined;
 }): ContributorOutcomeHistory {
   const repoByName = new Map(args.repositories.map((repo) => [repo.fullName.toLowerCase(), repo]));
   const repoNamesByKey = new Map<string, { repoFullName: string; priority: number }>();
@@ -1327,12 +1328,12 @@ export function buildContributorOutcomeHistory(args: {
       const repo = repoByName.get(repoFullName.toLowerCase()) ?? null;
       const official = officialByRepo.get(repoFullName.toLowerCase());
       const cachedStat = statsByRepo.get(repoFullName.toLowerCase());
-      const cachedPrs = args.pullRequests.filter((pr) => pr.repoFullName === repoFullName && sameLogin(pr.authorLogin, args.login));
-      const cachedIssues = args.issues.filter((issue) => issue.repoFullName === repoFullName && sameLogin(issue.authorLogin, args.login));
+      const cachedPrs = args.pullRequests.filter((pr) => sameRepo(pr.repoFullName, repoFullName) && sameLogin(pr.authorLogin, args.login));
+      const cachedIssues = args.issues.filter((issue) => sameRepo(issue.repoFullName, repoFullName) && sameLogin(issue.authorLogin, args.login));
       const pullRequests = official?.pullRequests ?? Math.max(cachedPrs.length, cachedStat?.pullRequests ?? 0);
       const mergedPullRequests = official?.mergedPullRequests ?? Math.max(cachedPrs.filter((pr) => pr.mergedAt || pr.state === "merged").length, cachedStat?.mergedPullRequests ?? 0);
       const openPullRequests = official?.openPullRequests ?? Math.max(cachedPrs.filter((pr) => pr.state === "open").length, cachedStat?.openPullRequests ?? 0);
-      const closedPullRequests = official?.closedPullRequests ?? Math.max(cachedPrs.filter((pr) => pr.state === "closed").length, pullRequests - mergedPullRequests - openPullRequests, 0);
+      const closedPullRequests = official?.closedPullRequests ?? Math.max(cachedPrs.filter((pr) => pr.state === "closed" && !pr.mergedAt).length, pullRequests - mergedPullRequests - openPullRequests, 0);
       const openIssues = official?.openIssues ?? cachedIssues.filter((issue) => issue.state === "open").length;
       const closedIssues = official?.closedIssues ?? cachedIssues.filter((issue) => issue.state !== "open").length;
       const solvedIssues = official?.solvedIssues ?? 0;
@@ -1424,17 +1425,25 @@ export function buildContributorReconciliationReport(args: {
   pullRequests: PullRequestRecord[];
   issues: IssueRecord[];
   repoStats: ContributorRepoStatRecord[];
+  cachedRepoStats?: ContributorRepoStatRecord[] | undefined;
   history?: ContributorOutcomeHistory | undefined;
 }): ContributorReconciliationReport {
-  const repoNames = new Set<string>();
-  for (const repo of args.profile.gittensor?.repositories ?? []) repoNames.add(repo.repoFullName);
-  for (const stat of args.repoStats.filter((stat) => sameLogin(stat.login, args.login))) repoNames.add(stat.repoFullName);
-  for (const pr of args.pullRequests.filter((pr) => sameLogin(pr.authorLogin, args.login))) repoNames.add(pr.repoFullName);
-  for (const issue of args.issues.filter((issue) => sameLogin(issue.authorLogin, args.login))) repoNames.add(issue.repoFullName);
+  const cachedStats = args.cachedRepoStats ?? args.repoStats;
+  const repoNamesByKey = new Map<string, { repoFullName: string; priority: number }>();
+  const addRepoName = (repoFullName: string, priority: number) => {
+    const key = repoFullName.toLowerCase();
+    const current = repoNamesByKey.get(key);
+    if (!current || priority >= current.priority) repoNamesByKey.set(key, { repoFullName, priority });
+  };
+  for (const repoFullName of args.profile.registeredRepoActivity.reposTouched) addRepoName(repoFullName, 1);
+  for (const stat of cachedStats.filter((stat) => sameLogin(stat.login, args.login))) addRepoName(stat.repoFullName, 2);
+  for (const pr of args.pullRequests.filter((pr) => sameLogin(pr.authorLogin, args.login))) addRepoName(pr.repoFullName, 3);
+  for (const issue of args.issues.filter((issue) => sameLogin(issue.authorLogin, args.login))) addRepoName(issue.repoFullName, 3);
+  for (const repo of args.profile.gittensor?.repositories ?? []) addRepoName(repo.repoFullName, 4);
   const officialByRepo = new Map(args.profile.gittensor?.repositories.map((repo) => [repo.repoFullName.toLowerCase(), repo]) ?? []);
-  const statByRepo = new Map(args.repoStats.filter((stat) => sameLogin(stat.login, args.login)).map((stat) => [stat.repoFullName.toLowerCase(), stat]));
+  const statByRepo = new Map(cachedStats.filter((stat) => sameLogin(stat.login, args.login)).map((stat) => [stat.repoFullName.toLowerCase(), stat]));
   const repoByName = new Map(args.repositories.map((repo) => [repo.fullName.toLowerCase(), repo]));
-  const repos = [...repoNames].sort((left, right) => left.localeCompare(right)).map((repoFullName) => {
+  const repos = [...repoNamesByKey.values()].map((entry) => entry.repoFullName).sort((left, right) => left.localeCompare(right)).map((repoFullName) => {
     const key = repoFullName.toLowerCase();
     const official = officialByRepo.get(key);
     const cached = cachedReconciliationCounts(args.login, repoFullName, args.pullRequests, args.issues, statByRepo.get(key));
@@ -1451,9 +1460,13 @@ export function buildContributorReconciliationReport(args: {
           validSolvedIssues: official.validSolvedIssues,
         }
       : undefined;
+    const repo = repoByName.get(key);
+    const [repoOwner] = repoFullName.split("/");
     const maintainerLane =
-      sameLogin(repoByName.get(key)?.owner, args.login) ||
-      args.pullRequests.some((pr) => sameRepo(pr.repoFullName, repoFullName) && sameLogin(pr.authorLogin, args.login) && isMaintainerAssociation(pr.authorAssociation));
+      sameLogin(repo?.owner, args.login) ||
+      sameLogin(repoOwner, args.login) ||
+      args.pullRequests.some((pr) => sameRepo(pr.repoFullName, repoFullName) && sameLogin(pr.authorLogin, args.login) && isMaintainerAssociation(pr.authorAssociation)) ||
+      args.issues.some((issue) => sameRepo(issue.repoFullName, repoFullName) && sameLogin(issue.authorLogin, args.login) && isMaintainerAssociation(issue.authorAssociation));
     return {
       repoFullName,
       maintainerLane,
@@ -1528,15 +1541,19 @@ function cachedReconciliationCounts(
   const mergedPullRequests = Math.max(cachedPrs.filter((pr) => pr.mergedAt || pr.state === "merged").length, stat?.mergedPullRequests ?? 0);
   const openPullRequests = Math.max(cachedPrs.filter((pr) => pr.state === "open").length, stat?.openPullRequests ?? 0);
   const pullRequestCount = Math.max(cachedPrs.length, stat?.pullRequests ?? 0);
-  const closedPullRequests = Math.max(cachedPrs.filter((pr) => pr.state === "closed").length, pullRequestCount - mergedPullRequests - openPullRequests, 0);
-  const openIssues = cachedIssues.filter((issue) => issue.state === "open").length;
-  const closedIssues = cachedIssues.filter((issue) => issue.state !== "open").length;
+  const closedUnmergedPullRequests = cachedPrs.filter((pr) => pr.state === "closed" && !pr.mergedAt).length;
+  const closedPullRequests = Math.max(closedUnmergedPullRequests, pullRequestCount - mergedPullRequests - openPullRequests, 0);
+  const openIssueRows = cachedIssues.filter((issue) => issue.state === "open").length;
+  const closedIssueRows = cachedIssues.filter((issue) => issue.state !== "open").length;
+  const issueCount = Math.max(cachedIssues.length, stat?.issues ?? 0);
+  const openIssues = openIssueRows;
+  const closedIssues = Math.max(closedIssueRows, issueCount - openIssues, 0);
   return {
     pullRequests: pullRequestCount,
     mergedPullRequests,
     openPullRequests,
     closedPullRequests,
-    issues: openIssues + closedIssues,
+    issues: issueCount,
     openIssues,
     closedIssues,
     solvedIssues: 0,
@@ -1568,8 +1585,18 @@ function reconciliationReasons(official: ContributorOutcomeCounts | undefined, c
     ...(official && official.pullRequests !== cached.pullRequests
       ? [`Official PR total ${official.pullRequests} differs from cached GitHub context ${cached.pullRequests}; official total is authoritative.`]
       : []),
-    ...(official && official.openPullRequests < cached.openPullRequests ? ["Cached open PRs may include work outside the official lookback or not yet reflected upstream."] : []),
-    ...(official && official.closedPullRequests < cached.closedPullRequests ? ["Cached closed PRs may include stale or closed-unmerged context that official totals do not count the same way."] : []),
+    ...(official && official.mergedPullRequests !== cached.mergedPullRequests
+      ? [`Official merged PR total ${official.mergedPullRequests} differs from cached GitHub context ${cached.mergedPullRequests}; official merge data is authoritative.`]
+      : []),
+    ...(official && official.openPullRequests !== cached.openPullRequests ? ["Official open PR count differs from cached GitHub context; refresh timing or lookback windows may differ."] : []),
+    ...(official && official.closedPullRequests !== cached.closedPullRequests ? ["Official closed PR count differs from cached closed-unmerged context."] : []),
+    ...(official && official.issues !== cached.issues
+      ? [`Official issue total ${official.issues} differs from cached GitHub context ${cached.issues}; official issue data is authoritative.`]
+      : []),
+    ...(official && official.openIssues !== cached.openIssues ? ["Official open issue count differs from cached GitHub context."] : []),
+    ...(official && official.closedIssues !== cached.closedIssues ? ["Official closed issue count differs from cached GitHub context."] : []),
+    ...(official && official.solvedIssues !== cached.solvedIssues ? ["Official solved issue count differs from cached solver context."] : []),
+    ...(official && official.validSolvedIssues !== cached.validSolvedIssues ? ["Official valid-solved issue count differs from cached solver context."] : []),
     ...(maintainerLane ? ["Maintainer-owned repo history is separated from normal contributor evidence."] : []),
   ];
 }
