@@ -436,6 +436,44 @@ describe("gittensory-mcp CLI", () => {
     expect(packet.validation).toEqual(expect.arrayContaining([expect.objectContaining({ command: "npm test", status: "failed", exitCode: 2 })]));
   });
 
+  it("classifies bare nonzero validation statuses as failed", async () => {
+    tempDir = createPacketRepo();
+    const validation = await capturePacketValidation(tempDir, [
+      "--validation",
+      "npm test|1",
+      "--validation-command",
+      "npm run lint",
+      "--validation-status",
+      "2",
+    ]);
+
+    expect(validation).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ command: "npm test", status: "failed", exitCode: 1 }),
+        expect.objectContaining({ command: "npm run lint", status: "failed", exitCode: 2 }),
+      ]),
+    );
+  });
+
+  it("does not infer HTTP status summaries as process exit codes", async () => {
+    tempDir = createPacketRepo();
+    const validation = await capturePacketValidation(tempDir, ["--validation", "npm run e2e|HTTP status 200 OK"]);
+
+    expect(validation).toEqual(
+      expect.arrayContaining([expect.objectContaining({ command: "npm run e2e", status: "not_run", summary: "HTTP status 200 OK" })]),
+    );
+    expect(validation[0]).not.toHaveProperty("exitCode");
+  });
+
+  it("infers expanded validation failures from summaries when status is absent", async () => {
+    tempDir = createPacketRepo();
+    const validation = await capturePacketValidation(tempDir, ["--validation-command", "npm test", "--validation-summary", "exit code 1"]);
+
+    expect(validation).toEqual(
+      expect.arrayContaining([expect.objectContaining({ command: "npm test", status: "failed", exitCode: 1, summary: "exit code 1" })]),
+    );
+  });
+
   it("rejects unsupported client snippets", () => {
     expect(() => run(["init-client", "--print", "other"])).toThrow(/Unsupported client/);
   });
@@ -481,6 +519,33 @@ function runAsync(args: string[], env: Record<string, string> = {}) {
 
 function git(cwd: string, ...args: string[]) {
   execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+}
+
+function createPacketRepo() {
+  const cwd = mkdtempSync(join(tmpdir(), "gittensory-cli-"));
+  git(cwd, "init");
+  git(cwd, "config", "user.email", "test@example.com");
+  git(cwd, "config", "user.name", "Gittensory Test");
+  git(cwd, "config", "commit.gpgsign", "false");
+  git(cwd, "remote", "add", "origin", "git@github.com:JSONbored/gittensory.git");
+  writeFileSync(join(cwd, "README.md"), "fixture\n");
+  git(cwd, "add", "README.md");
+  git(cwd, "commit", "-m", "initial commit");
+  return cwd;
+}
+
+async function capturePacketValidation(tempDir: string, validationArgs: string[]) {
+  const requests: unknown[] = [];
+  const url = await startFixtureServer({ onPacketRequest: (body) => requests.push(body) });
+  await runAsync(
+    ["agent", "packet", "--login", "oktofeesh1", "--cwd", tempDir, "--base", "HEAD", ...validationArgs, "--json"],
+    {
+      GITTENSORY_API_URL: url,
+      GITTENSORY_TOKEN: "session-token",
+      GITTENSORY_CONFIG_DIR: tempDir,
+    },
+  );
+  return (requests[0] as { validation: Array<{ command: string; status: string; exitCode?: number; summary?: string }> }).validation;
 }
 
 async function startFixtureServer(options: { latestVersion?: string; minMcpVersion?: string; npmStatus?: number; packetMarkdown?: string; onPacketRequest?: (body: unknown) => void } = {}) {

@@ -931,19 +931,28 @@ function parseValidationEntry(entry) {
   const explicitStatus = normalizeValidationStatus(parts[0]);
   const command = explicitStatus ? parts[1] : parts[0];
   const rest = explicitStatus ? parts.slice(2) : parts.slice(1);
-  const durationMs = parseDurationMs(rest[0]);
-  const summaryParts = durationMs !== undefined ? rest.slice(1) : rest;
+  const inferredStatusText = !explicitStatus && isValidationStatusLike(rest[0]) ? rest[0] : undefined;
+  const detailParts = inferredStatusText ? rest.slice(1) : rest;
+  const durationMs = parseDurationMs(detailParts[0]);
+  const summaryParts = durationMs !== undefined ? detailParts.slice(1) : detailParts;
   return validationEntry({
     command,
-    statusText: explicitStatus ?? summaryParts.join(" "),
+    statusText: explicitStatus ?? inferredStatusText,
     summaryText: summaryParts.join("|"),
     durationMs,
   });
 }
 
 function validationEntry({ command, statusText, summaryText, durationText, durationMs }) {
-  const exitCode = inferValidationExitCode(statusText);
-  const status = normalizeValidationStatus(statusText) ?? (exitCode !== undefined ? (exitCode === 0 ? "passed" : "failed") : "not_run");
+  const statusSource = nonEmptyString(statusText);
+  const summarySource = statusSource ? undefined : nonEmptyString(summaryText);
+  const exitCode =
+    inferValidationExitCode(statusSource, { allowBareCode: true, allowGenericStatus: true }) ??
+    inferValidationExitCode(summarySource, { allowBareCode: false, allowGenericStatus: false });
+  const status =
+    normalizeValidationStatus(statusSource) ??
+    normalizeSummaryValidationStatus(summarySource) ??
+    (exitCode !== undefined ? (exitCode === 0 ? "passed" : "failed") : "not_run");
   return stripUndefined({
     command: sanitizeValidationText(command, 160),
     status,
@@ -972,7 +981,7 @@ function isValidationStatus(value) {
 function normalizeValidationStatus(value) {
   const text = String(value ?? "").trim().toLowerCase().replace(/[-\s]+/g, "_");
   if (["passed", "pass", "success", "ok", "exit_0", "0"].includes(text)) return "passed";
-  if (["failed", "fail", "failure", "error", "nonzero", "non_zero"].includes(text) || /^exit_[1-9]\d*$/.test(text)) return "failed";
+  if (["failed", "fail", "failure", "error", "nonzero", "non_zero"].includes(text) || /^exit_[1-9]\d*$/.test(text) || /^[1-9]\d*$/.test(text)) return "failed";
   if (["not_run", "notrun", "not_ran", "pending"].includes(text)) return "not_run";
   if (["skipped", "skip"].includes(text)) return "skipped";
   if (["focused", "focus"].includes(text)) return "focused";
@@ -980,14 +989,38 @@ function normalizeValidationStatus(value) {
   return undefined;
 }
 
-function inferValidationExitCode(value) {
+function isValidationStatusLike(value) {
+  return Boolean(
+    normalizeValidationStatus(value) ??
+      inferValidationExitCode(value, { allowBareCode: true, allowGenericStatus: true }),
+  );
+}
+
+function inferValidationExitCode(value, options = {}) {
   const text = String(value ?? "").trim().toLowerCase();
-  const match = text.match(/\b(?:exit|status|code)[\s:_-]*(\d{1,3})\b/);
+  const allowBareCode = options.allowBareCode === true;
+  const allowGenericStatus = options.allowGenericStatus === true;
+  if (allowBareCode && /^\d{1,3}$/.test(text)) return Number(text);
+  const processExitPattern = /\b(?:exit(?:ed)?(?:\s+(?:code|status))?|exitcode|process\s+(?:exit(?:ed)?|status|code)|command\s+(?:exit(?:ed)?|status|code)|shell\s+(?:exit(?:ed)?|status|code))[\s:_-]*(\d{1,3})\b/;
+  const genericStatusPattern = /^(?:status|code)[\s:_-]*(\d{1,3})\b/;
+  const match = text.match(processExitPattern) ?? (allowGenericStatus ? text.match(genericStatusPattern) : null);
   if (match) return Number(match[1]);
+  if (!allowBareCode && /^\d{1,3}$/.test(text)) return undefined;
   const status = normalizeValidationStatus(text);
   if (status === "passed" || status === "focused") return 0;
   if (status === "failed") return 1;
   return undefined;
+}
+
+function normalizeSummaryValidationStatus(value) {
+  const text = nonEmptyString(value);
+  if (!text || /^\d{1,3}$/.test(text)) return undefined;
+  return normalizeValidationStatus(text);
+}
+
+function nonEmptyString(value) {
+  const text = String(value ?? "").trim();
+  return text ? text : undefined;
 }
 
 function parseDurationMs(value) {
