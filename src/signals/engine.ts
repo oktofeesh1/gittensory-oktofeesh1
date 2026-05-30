@@ -1989,7 +1989,7 @@ function classifyIssueDiscoveryLifecycle(
 ): IssueDiscoveryLifecycleReport["states"][number] {
   const linkedOpenPrs = pullRequests.filter((pr) => pr.linkedIssues.includes(issue.number) || issue.linkedPrs.includes(pr.number));
   const linkedMergedPrs = recentMergedPullRequests.filter((pr) => pr.linkedIssues.includes(issue.number) || issue.linkedPrs.includes(pr.number));
-  const solvedByPullRequests = [...new Set([...linkedOpenPrs.filter((pr) => pr.mergedAt || pr.state === "merged").map((pr) => pr.number), ...linkedMergedPrs.map((pr) => pr.number), ...issue.linkedPrs])].sort(
+  const solvedByPullRequests = [...new Set([...linkedOpenPrs.filter((pr) => pr.mergedAt || pr.state === "merged").map((pr) => pr.number), ...linkedMergedPrs.map((pr) => pr.number)])].sort(
     (left, right) => left - right,
   );
   const labels = issue.labels.map((label) => label.toLowerCase());
