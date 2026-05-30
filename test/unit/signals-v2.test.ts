@@ -635,6 +635,14 @@ describe("v2 signal builders", () => {
     expect(role).toMatchObject({ role: "owner", maintainerLane: true, normalContributorEvidenceAllowed: false });
     expect(history.repoOutcomes.filter((outcome) => outcome.repoFullName.toLowerCase() === "jsonbored/awesome-claude")).toHaveLength(1);
     expect(history.repoOutcomes.find((outcome) => outcome.repoFullName === "jsonbored/awesome-claude")).toMatchObject({ successLevel: "maintainer_context" });
+    expect(history.reconciliation).toMatchObject({ officialAuthoritative: true, totals: { effective: { pullRequests: 63, mergedPullRequests: 46 } } });
+    expect(history.reconciliation?.repos.find((entry) => entry.repoFullName.toLowerCase() === "jsonbored/awesome-claude")).toMatchObject({
+      maintainerLane: true,
+      discrepancyReasons: expect.arrayContaining([
+        expect.stringContaining("Official PR total"),
+        expect.stringContaining("Maintainer-owned repo history"),
+      ]),
+    });
     expect(buildContributorPatternReport(history, "failure").patterns.map((pattern) => pattern.title)).toContain("Raw issue activity is not solved discovery evidence");
     expect(strategy.maintainerLaneRepos).toEqual(expect.arrayContaining([expect.objectContaining({ repoFullName: "jsonbored/awesome-claude" })]));
     expect(recommendation.recommendation).toBe("maintainer_lane");
@@ -643,6 +651,22 @@ describe("v2 signal builders", () => {
     expect(cut.recommendedAction).toEqual(expect.stringMatching(/consider_small_cut|fix_config_first|leave_disabled|review_existing_cut/));
     expect(review.recommendation).toBe("maintainer_lane");
     expect(JSON.stringify({ strategy, review })).not.toMatch(/wallet|farming|reward/i);
+  });
+
+  it("labels GitHub-only contributor reconciliation as context", () => {
+    const profile = buildContributorProfile("oktofeesh1", { login: "oktofeesh1", topLanguages: ["TypeScript"], source: "github" }, pullRequests, issues);
+    const history = buildContributorOutcomeHistory({
+      login: "oktofeesh1",
+      profile,
+      repositories: [repo],
+      pullRequests,
+      issues,
+      repoStats: [{ login: "oktofeesh1", repoFullName: repo.fullName, pullRequests: 2, mergedPullRequests: 1, openPullRequests: 1, issues: 1, stalePullRequests: 0, unlinkedPullRequests: 0, dominantLabels: ["feature"], lastActivityAt: "2026-05-30T00:00:00.000Z" }],
+    });
+
+    expect(history.reconciliation).toMatchObject({ officialAuthoritative: false, source: "github_cache" });
+    expect(history.reconciliation?.findings).toEqual(expect.arrayContaining([expect.objectContaining({ code: "official_source_unavailable" })]));
+    expect(history.reconciliation?.repos[0]?.discrepancyReasons).toEqual(expect.arrayContaining([expect.stringContaining("Official source unavailable")]));
   });
 
   it("classifies role context from GitHub associations, official activity, cache activity, and unknown state", () => {
