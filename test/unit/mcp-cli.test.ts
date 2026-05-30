@@ -372,11 +372,11 @@ describe("gittensory-mcp CLI", () => {
         "--validation-command",
         "npm run lint",
         "--validation-status",
-        "exit 1",
+        "exit code 1",
         "--validation-duration",
         "2s",
         "--validation-summary",
-        "lint failed at /tmp/raw.log",
+        "lint failed at C:/Users/alice/raw.log and /tmp/raw.log",
         "--json",
       ],
       {
@@ -394,6 +394,46 @@ describe("gittensory-mcp CLI", () => {
       ]),
     );
     expect(JSON.stringify(packet.validation)).not.toMatch(/raw_trust|\/Users\/example|\/tmp\/raw/i);
+    expect(JSON.stringify(packet.validation)).not.toMatch(/C:\/Users|alice/i);
+  });
+
+  it("classifies nonzero validation status phrases as failed", async () => {
+    tempDir = mkdtempSync(join(tmpdir(), "gittensory-cli-"));
+    git(tempDir, "init");
+    git(tempDir, "config", "user.email", "test@example.com");
+    git(tempDir, "config", "user.name", "Gittensory Test");
+    git(tempDir, "config", "commit.gpgsign", "false");
+    git(tempDir, "remote", "add", "origin", "git@github.com:JSONbored/gittensory.git");
+    writeFileSync(join(tempDir, "README.md"), "fixture\n");
+    git(tempDir, "add", "README.md");
+    git(tempDir, "commit", "-m", "initial commit");
+    const requests: unknown[] = [];
+    const url = await startFixtureServer({ onPacketRequest: (body) => requests.push(body) });
+    await runAsync(
+      [
+        "agent",
+        "packet",
+        "--login",
+        "oktofeesh1",
+        "--cwd",
+        tempDir,
+        "--base",
+        "HEAD",
+        "--validation-command",
+        "npm test",
+        "--validation-status",
+        "status: 2",
+        "--json",
+      ],
+      {
+        GITTENSORY_API_URL: url,
+        GITTENSORY_TOKEN: "session-token",
+        GITTENSORY_CONFIG_DIR: tempDir,
+      },
+    );
+
+    const packet = requests[0] as { validation: Array<{ command: string; status: string; exitCode?: number }> };
+    expect(packet.validation).toEqual(expect.arrayContaining([expect.objectContaining({ command: "npm test", status: "failed", exitCode: 2 })]));
   });
 
   it("rejects unsupported client snippets", () => {

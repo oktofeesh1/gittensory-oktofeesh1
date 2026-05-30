@@ -916,12 +916,11 @@ function validationFromOptions(options) {
   const summaries = options.validationSummary ?? [];
   const durations = options.validationDuration ?? [];
   const expanded = commands.map((command, index) =>
-    stripUndefined({
-      command: sanitizeValidationText(command, 160),
-      status: normalizeValidationStatus(statuses[index]) ?? "not_run",
-      summary: sanitizeValidationText(summaries[index]),
-      durationMs: parseDurationMs(durations[index]),
-      exitCode: inferValidationExitCode(statuses[index]),
+    validationEntry({
+      command,
+      statusText: statuses[index],
+      summaryText: summaries[index],
+      durationText: durations[index],
     }),
   );
   return [...direct, ...expanded].filter((entry) => typeof entry.command === "string" && entry.command.length > 0);
@@ -934,12 +933,23 @@ function parseValidationEntry(entry) {
   const rest = explicitStatus ? parts.slice(2) : parts.slice(1);
   const durationMs = parseDurationMs(rest[0]);
   const summaryParts = durationMs !== undefined ? rest.slice(1) : rest;
+  return validationEntry({
+    command,
+    statusText: explicitStatus ?? summaryParts.join(" "),
+    summaryText: summaryParts.join("|"),
+    durationMs,
+  });
+}
+
+function validationEntry({ command, statusText, summaryText, durationText, durationMs }) {
+  const exitCode = inferValidationExitCode(statusText);
+  const status = normalizeValidationStatus(statusText) ?? (exitCode !== undefined ? (exitCode === 0 ? "passed" : "failed") : "not_run");
   return stripUndefined({
     command: sanitizeValidationText(command, 160),
-    status: explicitStatus ?? normalizeValidationStatus(summaryParts.join(" ")) ?? "not_run",
-    summary: sanitizeValidationText(summaryParts.join("|")),
-    durationMs,
-    exitCode: inferValidationExitCode(explicitStatus ?? summaryParts.join(" ")),
+    status,
+    summary: sanitizeValidationText(summaryText),
+    durationMs: durationMs ?? parseDurationMs(durationText),
+    exitCode,
   });
 }
 
@@ -995,7 +1005,7 @@ function sanitizeValidationText(value, maxLength = 240) {
   const text = String(value ?? "").replace(/[\r\n\t]+/g, " ").trim();
   if (!text) return undefined;
   const redacted = text
-    .replace(/(?:~\/|[A-Za-z]:\\)[^\s"'`,;)]+/g, "<local-path>")
+    .replace(/(?:~\/|[A-Za-z]:[\\/])[^\s"'`,;)]+/g, "<local-path>")
     .replace(/(^|[\s"'`=])\/(?:[^\s"'`,;)]+(?:\/[^\s"'`,;)]+)*)/g, (_, prefix) => `${prefix}<local-path>`)
     .replace(/\b(?:wallet|hotkey|coldkey|mnemonic|raw[-_\s]?trust|private[-_\s]?reviewability|trust[-_\s]?score)\b/gi, "[redacted]");
   return redacted.length <= maxLength ? redacted : `${redacted.slice(0, maxLength - 3)}...`;
