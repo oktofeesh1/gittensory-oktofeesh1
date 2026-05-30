@@ -1037,11 +1037,22 @@ function parseDurationMs(value) {
 function sanitizeValidationText(value, maxLength = 240) {
   const text = String(value ?? "").replace(/[\r\n\t]+/g, " ").trim();
   if (!text) return undefined;
-  const redacted = text
-    .replace(/(?:~\/|[A-Za-z]:[\\/])[^\s"'`,;)]+/g, "<local-path>")
-    .replace(/(^|[\s"'`=])\/(?:[^\s"'`,;)]+(?:\/[^\s"'`,;)]+)*)/g, (_, prefix) => `${prefix}<local-path>`)
-    .replace(/\b(?:wallet|hotkey|coldkey|mnemonic|raw[-_\s]?trust|private[-_\s]?reviewability|trust[-_\s]?score)\b/gi, "[redacted]");
+  const redacted = redactPrivateValidationMetrics(redactLocalValidationPaths(text));
   return redacted.length <= maxLength ? redacted : `${redacted.slice(0, maxLength - 3)}...`;
+}
+
+function redactLocalValidationPaths(text) {
+  const pathSegment = "[^\\\\/\\s\"'`,;)]+(?:\\s+[^\\\\/\\s\"'`,;)]+)*(?=[\\\\/])";
+  const pathTail = "[^\\\\/\\s\"'`,;)]+";
+  const localPathPattern = new RegExp(`(^|[\\s"'\\\`=])((?:~[\\\\/]|[A-Za-z]:[\\\\/]|/)(?:${pathSegment}[\\\\/])*${pathTail})`, "g");
+  return text.replace(localPathPattern, (_, prefix) => `${prefix}<local-path>`);
+}
+
+function redactPrivateValidationMetrics(text) {
+  return text.replace(
+    /\b(?:wallet|hotkey|coldkey|mnemonic|raw[-_\s]?trust|private[-_\s]?reviewability|trust[-_\s]?score)\b(?:\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s"'`,;)]+))?/gi,
+    "[redacted]",
+  );
 }
 
 function clientSnippet(client, command) {

@@ -474,6 +474,29 @@ describe("gittensory-mcp CLI", () => {
     );
   });
 
+  it("redacts space-containing local paths and private metric values from validation text", async () => {
+    tempDir = createPacketRepo();
+    const validation = await capturePacketValidation(tempDir, [
+      "--validation-command",
+      "node /Users/Alice Smith/project/run.js",
+      "--validation-status",
+      "failed",
+      "--validation-summary",
+      "log=C:\\Users\\Alice Smith\\raw.log raw_trust=0.72 private_reviewability=ready",
+    ]);
+
+    expect(validation).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          command: "node <local-path>",
+          status: "failed",
+          summary: "log=<local-path> [redacted] [redacted]",
+        }),
+      ]),
+    );
+    expect(JSON.stringify(validation)).not.toMatch(/Alice Smith|Smith[\\/]|raw\.log|0\.72|ready|\[redacted\]=/);
+  });
+
   it("rejects unsupported client snippets", () => {
     expect(() => run(["init-client", "--print", "other"])).toThrow(/Unsupported client/);
   });
