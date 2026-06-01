@@ -86,6 +86,20 @@ describe("product usage events", () => {
     expect(JSON.stringify(row.metadata)).not.toMatch(/\/Users|github_pat|ghp_|source code|private patch|trustScore|wallet/i);
   });
 
+  it("does not use API credentials as hash salt fallback", async () => {
+    const env = createTestEnv({ PRODUCT_USAGE_HASH_SALT: "", GITTENSORY_API_TOKEN: "private-api-token" });
+
+    await recordProductUsageEvent(env, {
+      surface: "api",
+      eventName: "credential_salt_regression",
+      actor: "oktofeesh1",
+      sessionId: "session-id",
+    });
+
+    const [row] = await listProductUsageEvents(env);
+    expect(row).toMatchObject({ actorHash: null, sessionHash: null });
+  });
+
   it("normalizes invalid event fields and bounds unusual metadata shapes", async () => {
     const env = createTestEnv({ GITTENSORY_API_TOKEN: "" });
     await recordProductUsageEvent(env, {

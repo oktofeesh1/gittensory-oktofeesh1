@@ -2791,7 +2791,7 @@ function normalizeProductUsageLatency(latencyMs: unknown): number | null {
 async function hashProductUsageIdentifier(env: Env, kind: "actor" | "session", value: unknown): Promise<string | null> {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (!normalized) return null;
-  const salt = env.PRODUCT_USAGE_HASH_SALT || env.GITTENSORY_API_TOKEN;
+  const salt = env.PRODUCT_USAGE_HASH_SALT;
   if (!salt) return null;
   return sha256Hex(`gittensory:product-usage:v1:${kind}:${salt}:${normalized}`);
 }
