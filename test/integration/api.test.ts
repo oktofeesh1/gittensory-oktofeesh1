@@ -1011,6 +1011,7 @@ describe("api routes", () => {
 
     const { token: browserToken } = await createSessionForGitHubUser(env, { login: "oktofeesh1", id: 12345 });
     const cookieHeaders = { cookie: `gittensory_session=${browserToken}`, "content-type": "application/json" };
+    const internalHeaders = { authorization: `Bearer ${env.INTERNAL_JOB_TOKEN}`, "content-type": "application/json" };
 
     const overviewPreflight = await app.request("/v1/app/overview", { method: "OPTIONS", headers: { origin: "https://gittensory.aethereal.dev" } }, env);
     expect(overviewPreflight.status).toBe(204);
@@ -1094,6 +1095,7 @@ describe("api routes", () => {
     expect(unknownOverview.status).toBe(200);
     await expect(unknownOverview.json()).resolves.toMatchObject({ roleSummary: { roles: [], onboarding: { status: "needs_setup" } } });
     expect((await app.request("/v1/app/operator-dashboard", { headers: unknownHeaders }, unknownEnv)).status).toBe(403);
+    expect((await app.request("/v1/app/analytics/daily-rollups", { headers: unknownHeaders }, unknownEnv)).status).toBe(403);
     expect((await app.request("/v1/contributors/new-user/decision-pack", { headers: unknownHeaders }, unknownEnv)).status).toBe(403);
     expect((await app.request("/v1/auth/extension/session", { method: "POST", headers: unknownHeaders }, unknownEnv)).status).toBe(403);
 
@@ -1118,6 +1120,7 @@ describe("api routes", () => {
     });
     expect((await app.request("/v1/app/maintainer-dashboard", { headers: ownerHeaders }, ownerEnv)).status).toBe(200);
     expect((await app.request("/v1/app/operator-dashboard", { headers: ownerHeaders }, ownerEnv)).status).toBe(403);
+    expect((await app.request("/v1/app/analytics/daily-rollups", { headers: ownerHeaders }, ownerEnv)).status).toBe(403);
     const ownerExtensionSession = await app.request("/v1/auth/extension/session", { method: "POST", headers: ownerHeaders }, ownerEnv);
     expect(ownerExtensionSession.status).toBe(201);
     const ownerExtensionSessionBody = (await ownerExtensionSession.json()) as { token: string; login: string; scopes: string[] };
@@ -1613,16 +1616,48 @@ describe("api routes", () => {
     );
     expect(JSON.stringify(productUsageEvents)).not.toMatch(/oktofeesh1|operator@example.com|gittensory_session|\/Users|github_pat|ghp_|source code|raw trust|wallet|hotkey/i);
 
+    const usageRollupRun = await app.request(
+      "/v1/internal/jobs/rollup-product-usage/run",
+      { method: "POST", headers: internalHeaders, body: JSON.stringify({ day: "2026-05-28" }) },
+      env,
+    );
+    expect(usageRollupRun.status).toBe(200);
+    await expect(usageRollupRun.json()).resolves.toMatchObject({
+      rollups: [expect.objectContaining({ day: "2026-05-28", status: "partial", totalEvents: productUsageEvents.length })],
+    });
+
+    const dailyRollups = await app.request("/v1/app/analytics/daily-rollups?limit=3", { headers: apiHeaders(env) }, env);
+    expect(dailyRollups.status).toBe(200);
+    await expect(dailyRollups.json()).resolves.toMatchObject({
+      status: expect.objectContaining({ status: "partial", latestRollupDay: "2026-05-28" }),
+      rollups: [expect.objectContaining({ day: "2026-05-28", activation: expect.any(Object) })],
+    });
+    const fallbackLimitRollups = await app.request("/v1/app/analytics/daily-rollups?limit=invalid", { headers: apiHeaders(env) }, env);
+    expect(fallbackLimitRollups.status).toBe(200);
+    await expect(fallbackLimitRollups.json()).resolves.toMatchObject({
+      status: expect.objectContaining({ latestRollupDay: "2026-05-28" }),
+      rollups: [expect.objectContaining({ day: "2026-05-28" })],
+    });
+    const defaultLimitRollups = await app.request("/v1/app/analytics/daily-rollups", { headers: apiHeaders(env) }, env);
+    expect(defaultLimitRollups.status).toBe(200);
+    await expect(defaultLimitRollups.json()).resolves.toMatchObject({
+      status: expect.objectContaining({ latestRollupDay: "2026-05-28" }),
+      rollups: [expect.objectContaining({ day: "2026-05-28" })],
+    });
+
     const usageOperator = await app.request("/v1/app/operator-dashboard", { headers: apiHeaders(env) }, env);
     expect(usageOperator.status).toBe(200);
-    const usageOperatorBody = (await usageOperator.json()) as { metrics: Array<{ label: string; value: string }>; usageSummary: { totalEvents: number } };
+    const usageOperatorBody = (await usageOperator.json()) as { metrics: Array<{ label: string; value: string }>; usageSummary: { totalEvents: number }; usageRollups: Array<{ day: string }>; usageRollupStatus: { status: string } };
     expect(usageOperatorBody.metrics).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ label: "Product events", value: String(productUsageEvents.length) }),
         expect.objectContaining({ label: "Active users" }),
+        expect.objectContaining({ label: "Activation rollups", value: "partial" }),
       ]),
     );
     expect(usageOperatorBody.usageSummary.totalEvents).toBe(productUsageEvents.length);
+    expect(usageOperatorBody.usageRollups).toEqual([expect.objectContaining({ day: "2026-05-28" })]);
+    expect(usageOperatorBody.usageRollupStatus.status).toBe("partial");
   });
 
   it("covers live app auth, validation, and internal job queue edge routes", async () => {

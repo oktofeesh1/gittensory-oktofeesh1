@@ -12,6 +12,22 @@ export const Route = createFileRoute("/app/analytics")({
 type OperatorDashboard = {
   metrics: Array<{ label: string; value: string; delta: string }>;
   noiseReduction: Array<{ label: string; value: number; spark: number[] }>;
+  usageRollupStatus?: {
+    status: "empty" | "ready" | "partial" | "stale" | "incomplete";
+    latestRollupDay?: string | null;
+    warnings: string[];
+  };
+  usageRollups?: Array<{
+    day: string;
+    status: "complete" | "partial" | "incomplete";
+    totalEvents: number;
+    activeActors: number;
+    activeRepos: number;
+    activation: {
+      fullyActivatedActors: number;
+      githubActivatedRepos: number;
+    };
+  }>;
 };
 
 function ProductAnalytics() {
@@ -48,7 +64,18 @@ function ProductAnalytics() {
               </p>
             </div>
             <div className="flex items-center gap-2">
-              <StatusPill status="ready">Live API</StatusPill>
+              <StatusPill
+                status={
+                  data.usageRollupStatus?.status === "ready" ||
+                  data.usageRollupStatus?.status === "partial"
+                    ? "ready"
+                    : data.usageRollupStatus?.status === "empty"
+                      ? "info"
+                      : "degraded"
+                }
+              >
+                {data.usageRollupStatus?.status ?? "Live API"}
+              </StatusPill>
               <BoundaryBadge boundary="private-api" />
             </div>
           </header>
@@ -86,6 +113,54 @@ function ProductAnalytics() {
               ))}
             </div>
           </section>
+
+          {data.usageRollups && data.usageRollups.length > 0 ? (
+            <section className="rounded-token border border-border bg-transparent p-5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="font-display text-token-lg font-semibold">
+                    Daily activation rollups
+                  </h2>
+                  <p className="mt-1 text-token-xs text-muted-foreground">
+                    Hashed actor, repo, command, tool, and maintainer-action funnels by UTC day.
+                  </p>
+                </div>
+                <StatusPill status={data.usageRollupStatus?.warnings.length ? "degraded" : "ready"}>
+                  {data.usageRollupStatus?.latestRollupDay ?? "current"}
+                </StatusPill>
+              </div>
+              <div className="mt-4 overflow-x-auto">
+                <table className="w-full min-w-[680px] text-left text-token-sm">
+                  <thead className="border-b border-border text-token-xs uppercase text-muted-foreground">
+                    <tr>
+                      <th className="py-2 pr-4 font-medium">Day</th>
+                      <th className="py-2 pr-4 font-medium">Status</th>
+                      <th className="py-2 pr-4 font-medium">Events</th>
+                      <th className="py-2 pr-4 font-medium">Actors</th>
+                      <th className="py-2 pr-4 font-medium">Repos</th>
+                      <th className="py-2 pr-4 font-medium">Activated</th>
+                      <th className="py-2 font-medium">GitHub activated</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.usageRollups.slice(0, 7).map((rollup) => (
+                      <tr key={rollup.day} className="border-b border-border/60 last:border-0">
+                        <td className="py-2 pr-4 font-mono text-token-xs">{rollup.day}</td>
+                        <td className="py-2 pr-4">{rollup.status}</td>
+                        <td className="py-2 pr-4 font-mono">{rollup.totalEvents}</td>
+                        <td className="py-2 pr-4 font-mono">{rollup.activeActors}</td>
+                        <td className="py-2 pr-4 font-mono">{rollup.activeRepos}</td>
+                        <td className="py-2 pr-4 font-mono">
+                          {rollup.activation.fullyActivatedActors}
+                        </td>
+                        <td className="py-2 font-mono">{rollup.activation.githubActivatedRepos}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          ) : null}
         </div>
       ) : null}
     </StateBoundary>

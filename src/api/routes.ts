@@ -37,6 +37,7 @@ import {
   getRepositorySettings,
   recordAuditEvent,
   getContributorEvidence,
+  getProductUsageRollupStatus,
   listAllPullRequestDetailSyncStates,
   listCheckSummaries,
   listBounties,
@@ -53,6 +54,7 @@ import {
   listIssueSignalSample,
   listAgentRunsForActor,
   listDigestSubscriptionsForLogin,
+  listProductUsageDailyRollups,
   listOpenPullRequests,
   listPullRequestFiles,
   listPullRequestReviews,
@@ -70,6 +72,7 @@ import {
   persistScorePreview,
   persistSignalSnapshot,
   recordProductUsageEvent,
+  rollupProductUsageDaily,
   summarizeProductUsageEvents,
   upsertDigestSubscription,
   upsertBounty,
@@ -752,7 +755,7 @@ export function createApp() {
     const forbidden = await requireAppRole(c, ["operator"]);
     if (forbidden) return forbidden;
     const usageSince = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-    const [repositories, installations, health, registry, scoring, upstreamDrift, activeSessions, digestSubscriptions, rateLimits, usageSummary] = await Promise.all([
+    const [repositories, installations, health, registry, scoring, upstreamDrift, activeSessions, digestSubscriptions, rateLimits, usageSummary, usageRollups, usageRollupStatus] = await Promise.all([
       listRepositories(c.env),
       listInstallations(c.env),
       listInstallationHealth(c.env),
@@ -763,6 +766,8 @@ export function createApp() {
       countActiveDigestSubscriptions(c.env),
       listLatestGitHubRateLimitObservations(c.env, 20),
       summarizeProductUsageEvents(c.env, usageSince),
+      listProductUsageDailyRollups(c.env, { limit: 14 }),
+      getProductUsageRollupStatus(c.env),
     ]);
     const installedRepos = repositories.filter((repo) => repo.isInstalled).length;
     const registeredRepos = repositories.filter((repo) => repo.isRegistered).length;
@@ -775,6 +780,7 @@ export function createApp() {
         { label: "Digest subscriptions", value: String(digestSubscriptions), delta: "store-only" },
         { label: "Product events", value: String(usageSummary.totalEvents), delta: "last 7 days" },
         { label: "Active users", value: String(usageSummary.activeActors), delta: "hashed, last 7 days" },
+        { label: "Activation rollups", value: usageRollupStatus.status, delta: usageRollupStatus.latestRollupDay ?? "not generated" },
         { label: "Install issues", value: String(health.filter((record) => record.status !== "healthy").length), delta: "current health cache" },
         { label: "Rate-limit events", value: String(rateLimits.length), delta: "latest observations" },
       ],
@@ -785,10 +791,20 @@ export function createApp() {
       ],
       weeklyReport: buildOperatorWeeklyReport({ repositories, installations, health, registry, scoring, upstreamDrift }),
       usageSummary,
+      usageRollups,
+      usageRollupStatus,
       registry,
       scoringModel: scoring,
       upstreamDrift,
     });
+  });
+
+  app.get("/v1/app/analytics/daily-rollups", async (c) => {
+    const forbidden = await requireAppRole(c, ["operator"]);
+    if (forbidden) return forbidden;
+    const limit = Math.max(1, Math.min(90, Number(c.req.query("limit") ?? 14) || 14));
+    const [rollups, status] = await Promise.all([listProductUsageDailyRollups(c.env, { limit }), getProductUsageRollupStatus(c.env)]);
+    return c.json({ generatedAt: nowIso(), status, rollups });
   });
 
   app.get("/v1/app/commands", async (c) =>
@@ -1705,6 +1721,15 @@ export function createApp() {
     return c.json({ ok: true, status: "queued", repoFullName }, 202);
   });
 
+  app.post("/v1/internal/jobs/rollup-product-usage", async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const day = typeof body?.day === "string" ? body.day : undefined;
+    const days = Number.isFinite(Number(body?.days)) ? Math.max(1, Math.min(31, Math.round(Number(body.days)))) : undefined;
+    const message: JobMessage = { type: "rollup-product-usage", requestedBy: "api", ...(day ? { day } : {}), ...(days === undefined ? {} : { days }) };
+    await c.env.JOBS.send(message);
+    return c.json({ ok: true, status: "queued", day, days }, 202);
+  });
+
   app.post("/v1/internal/jobs/repair-data-fidelity", async (c) => {
     const message: JobMessage = { type: "repair-data-fidelity", requestedBy: "api" };
     await c.env.JOBS.send(message);
@@ -1716,6 +1741,13 @@ export function createApp() {
     const repoFullName = typeof body?.repoFullName === "string" ? body.repoFullName : undefined;
     await generateSignalSnapshots(c.env, repoFullName);
     return c.json({ ok: true, status: "completed", repoFullName });
+  });
+
+  app.post("/v1/internal/jobs/rollup-product-usage/run", async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const day = typeof body?.day === "string" ? body.day : undefined;
+    const days = Number.isFinite(Number(body?.days)) ? Math.max(1, Math.min(31, Math.round(Number(body.days)))) : undefined;
+    return c.json(await rollupProductUsageDaily(c.env, { ...(day ? { day } : {}), ...(days === undefined ? {} : { days }) }));
   });
 
   app.post("/v1/internal/jobs/refresh-installation-health/run", async (c) => {
