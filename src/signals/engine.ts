@@ -85,6 +85,12 @@ export type QueueHealth = {
     likelyReviewablePullRequests: number;
   };
   findings: SignalFinding[];
+  rankedPullRequests?: {
+    number: number;
+    title: string;
+    authorLogin: string;
+    recommendation: string;
+  }[];
 };
 
 export type QueueSignalCounts = {
