@@ -85,6 +85,7 @@ import {
 } from "../github/backfill";
 import { contributorRepoStatsFromGittensor, fetchGittensorContributorSnapshot } from "../gittensor/api";
 import { fetchPublicContributorProfile } from "../github/public";
+import { GITTENSORY_MENTION_COMMAND_CATALOG } from "../github/commands";
 import { handleGitHubWebhook } from "../github/webhook";
 import { handleMcpRequest } from "../mcp/server";
 import { buildOpenApiSpec } from "../openapi/spec";
@@ -1607,6 +1608,14 @@ const APP_COMMANDS = [
     description: "Preview the public-safe summary that may be posted to a PR thread.",
     endpoint: "/v1/app/commands/preview",
   },
+  ...GITTENSORY_MENTION_COMMAND_CATALOG.filter((command) => !["help", "preflight", "blockers", "packet"].includes(command.id)).map((command) => ({
+    id: command.id,
+    command: `@gittensory ${command.id}`,
+    audience: "public-safe",
+    boundary: "public",
+    description: command.description,
+    endpoint: "GitHub issue comment",
+  })),
 ] as const;
 
 function authRedirectWithError(env: Env, reason: string): string {
