@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createSessionForGitHubUser } from "../../src/auth/security";
+import { createSessionForGitHubUser, hashToken } from "../../src/auth/security";
 import {
   upsertBounty,
   upsertBurdenForecast,
@@ -1243,6 +1243,13 @@ describe("api routes", () => {
     expect(extensionOverview.status).toBe(403);
     await expect(extensionOverview.json()).resolves.toMatchObject({ error: "insufficient_scope" });
 
+    const staticExtensionContext = await app.request("/v1/extension/pull-context?owner=entrius&repo=allways-ui&pullNumber=12", { headers: apiHeaders(env) }, env);
+    expect(staticExtensionContext.status).toBe(403);
+    await expect(staticExtensionContext.json()).resolves.toMatchObject({ error: "extension_session_required" });
+    const fullBrowserSessionExtensionContext = await app.request("/v1/extension/pull-context?owner=entrius&repo=allways-ui&pullNumber=12", { headers: cookieHeaders }, env);
+    expect(fullBrowserSessionExtensionContext.status).toBe(403);
+    await expect(fullBrowserSessionExtensionContext.json()).resolves.toMatchObject({ error: "extension_session_required" });
+
     const fallbackOriginEnv = createTestEnv({ ADMIN_GITHUB_LOGINS: "oktofeesh1" });
     delete (fallbackOriginEnv as Partial<Env>).PUBLIC_API_ORIGIN;
     const { token: noIdToken } = await createSessionForGitHubUser(fallbackOriginEnv, { login: "oktofeesh1" });
@@ -1285,6 +1292,29 @@ describe("api routes", () => {
       pullNumber: 99,
       panels: expect.arrayContaining([expect.objectContaining({ label: "Contributor", badge: "unknown" })]),
     });
+
+    const expiringExtensionSession = await app.request("/v1/auth/extension/session", { method: "POST", headers: cookieHeaders }, env);
+    expect(expiringExtensionSession.status).toBe(201);
+    const expiringExtensionSessionBody = (await expiringExtensionSession.json()) as { token: string };
+    await env.DB.prepare("update auth_sessions set expires_at = ? where token_hash = ?").bind("2020-01-01T00:00:00.000Z", await hashToken(expiringExtensionSessionBody.token)).run();
+    const expiredExtensionContext = await app.request(
+      "/v1/extension/pull-context?owner=entrius&repo=allways-ui&pullNumber=12",
+      { headers: { authorization: `Bearer ${expiringExtensionSessionBody.token}` } },
+      env,
+    );
+    expect(expiredExtensionContext.status).toBe(401);
+    await expect(expiredExtensionContext.json()).resolves.toMatchObject({ error: "unauthorized" });
+
+    const extensionLogout = await app.request("/v1/auth/logout", { method: "POST", headers: { authorization: `Bearer ${extensionSessionBody.token}` } }, env);
+    expect(extensionLogout.status).toBe(200);
+    await expect(extensionLogout.json()).resolves.toMatchObject({ ok: true, revoked: true });
+    const revokedExtensionContext = await app.request(
+      "/v1/extension/pull-context?owner=entrius&repo=allways-ui&pullNumber=12",
+      { headers: { authorization: `Bearer ${extensionSessionBody.token}` } },
+      env,
+    );
+    expect(revokedExtensionContext.status).toBe(401);
+    await expect(revokedExtensionContext.json()).resolves.toMatchObject({ error: "unauthorized" });
   });
 
   it("covers live app auth, validation, and internal job queue edge routes", async () => {

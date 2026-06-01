@@ -736,6 +736,8 @@ export function createApp() {
   });
 
   app.get("/v1/extension/pull-context", async (c) => {
+    const identity = await authenticateRequestIdentity(c);
+    if (!identity || identity.kind !== "session" || !isExtensionScopedSession(identity)) return c.json({ error: "extension_session_required" }, 403);
     const owner = c.req.query("owner") ?? "";
     const repoName = c.req.query("repo") ?? "";
     const pullNumber = Number(c.req.query("pullNumber") ?? "");
