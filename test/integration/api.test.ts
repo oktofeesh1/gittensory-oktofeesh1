@@ -3530,8 +3530,15 @@ describe("api routes", () => {
     );
     await upsertRepositoryFromGitHub(env, { name: "demo", full_name: "octo/demo", private: false, owner: { login: "octo" }, default_branch: "main" });
     await upsertIssueFromGitHub(env, "octo/demo", { number: 7, title: "Add cursor pagination to the labels endpoint", state: "open", html_url: "https://github.com/octo/demo/issues/7", user: { login: "octo" }, labels: [{ name: "feature" }], body: "Pagination is missing." });
+    // An open, unlinked issue with no PR claiming it -- this surfaces as an actual contributor opportunity
+    // (issue #7 is excluded because PR #12 below links it), so issue-fit returns eligible: true.
+    await upsertIssueFromGitHub(env, "octo/demo", { number: 8, title: "Document the labels endpoint response shape", state: "open", html_url: "https://github.com/octo/demo/issues/8", user: { login: "octo" }, labels: [{ name: "feature" }], body: "The labels endpoint response shape is undocumented." });
     await upsertPullRequestFromGitHub(env, "octo/demo", { number: 12, title: "Add cursor pagination", state: "open", html_url: "https://github.com/octo/demo/pull/12", user: { login: "contributor-dev" }, labels: [], body: "Fixes #7", head: { sha: "abc123", ref: "feat" }, base: { ref: "main" } });
     await upsertPullRequestFromGitHub(env, "octo/demo", { number: 13, title: "Someone else's PR", state: "open", html_url: "https://github.com/octo/demo/pull/13", user: { login: "other-dev" }, labels: [], head: { sha: "def456", ref: "x" }, base: { ref: "main" } });
+    // contributor-dev's own PR with NO body -- exercises the body-defaulting path in the pr-status handler.
+    await upsertPullRequestFromGitHub(env, "octo/demo", { number: 14, title: "Tidy labels output", state: "open", html_url: "https://github.com/octo/demo/pull/14", user: { login: "contributor-dev" }, labels: [], head: { sha: "aaa111", ref: "tidy" }, base: { ref: "main" } });
+    // A PR with no author -- exercises the authorLogin-defaulting path of the self-only PR guard (→ 403).
+    await upsertPullRequestFromGitHub(env, "octo/demo", { number: 15, title: "Authorless PR", state: "open", html_url: "https://github.com/octo/demo/pull/15", labels: [], head: { sha: "bbb222", ref: "ghost" }, base: { ref: "main" } });
 
     // A non-maintainer mints a CONTRIBUTOR-scoped extension session.
     const { token: browserToken } = await createSessionForGitHubUser(env, { login: "contributor-dev", id: 555 });
@@ -3546,6 +3553,16 @@ describe("api routes", () => {
     const fitBody = (await fit.json()) as { eligible: boolean; fit?: string };
     expect(JSON.stringify(fitBody)).not.toMatch(FORBIDDEN_PUBLIC_REPORT_TERMS);
     if (fitBody.eligible) expect(["good", "caution", "hold"]).toContain(fitBody.fit);
+
+    // The unlinked, open issue #8 IS a real contributor opportunity → eligible: true with a fit band.
+    const eligibleFit = await app.request("/v1/extension/contributors/contributor-dev/issue-fit?owner=octo&repo=demo&issueNumber=8", { headers: bearer }, env);
+    expect(eligibleFit.status).toBe(200);
+    const eligibleFitBody = (await eligibleFit.json()) as { eligible: boolean; issueNumber: number; fit?: string };
+    expect(eligibleFitBody.eligible).toBe(true);
+    expect(eligibleFitBody.issueNumber).toBe(8);
+    expect(["good", "caution", "hold"]).toContain(eligibleFitBody.fit);
+    expect(JSON.stringify(eligibleFitBody)).not.toMatch(/"(?:score|total|max)":/);
+    expect(JSON.stringify(eligibleFitBody)).not.toMatch(FORBIDDEN_PUBLIC_REPORT_TERMS);
 
     const badges = await app.request("/v1/extension/contributors/contributor-dev/issue-badges?owner=octo&repo=demo", { headers: bearer }, env);
     expect(badges.status).toBe(200);
@@ -3562,8 +3579,18 @@ describe("api routes", () => {
     expect(JSON.stringify(prStatusBody)).not.toMatch(/"(?:score|total|max)":/);
     expect(JSON.stringify(prStatusBody)).not.toMatch(FORBIDDEN_PUBLIC_REPORT_TERMS);
 
+    // The contributor's OWN bodyless PR still resolves to a public-safe readiness band (body defaults cleanly).
+    const bodylessPrStatus = await app.request("/v1/extension/contributors/contributor-dev/pr-status?owner=octo&repo=demo&pullNumber=14", { headers: bearer }, env);
+    expect(bodylessPrStatus.status).toBe(200);
+    const bodylessPrStatusBody = (await bodylessPrStatus.json()) as { readinessBand: string };
+    expect(["strong", "developing", "early"]).toContain(bodylessPrStatusBody.readinessBand);
+
     // Self-only on the PR: a contributor cannot read another author's PR even in their own scope.
     expect((await app.request("/v1/extension/contributors/contributor-dev/pr-status?owner=octo&repo=demo&pullNumber=13", { headers: bearer }, env)).status).toBe(403);
+    // An authorless PR can never match the requesting contributor → self-only guard returns 403.
+    expect((await app.request("/v1/extension/contributors/contributor-dev/pr-status?owner=octo&repo=demo&pullNumber=15", { headers: bearer }, env)).status).toBe(403);
+    // issue-fit is self-only too: another login's path is rejected before any data is read.
+    expect((await app.request("/v1/extension/contributors/someone-else/issue-fit?owner=octo&repo=demo&issueNumber=8", { headers: bearer }, env)).status).toBe(403);
     // Missing PR → 404.
     expect((await app.request("/v1/extension/contributors/contributor-dev/pr-status?owner=octo&repo=demo&pullNumber=999", { headers: bearer }, env)).status).toBe(404);
     // Validation 400s — exercise every guard operand (missing owner / repo / non-integer / non-positive).
