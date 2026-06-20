@@ -31,13 +31,7 @@ export async function ensurePullRequestLabel(
 
   let created = false;
   if (options.createMissingLabel) {
-    const repoLabels = await octokit.request("GET /repos/{owner}/{repo}/labels", {
-      owner,
-      repo,
-      per_page: 100,
-    });
-    const labelExists = (repoLabels.data as GitHubLabel[]).some((label) => label.name?.toLowerCase() === labelName.toLowerCase());
-    if (!labelExists) {
+    try {
       await octokit.request("POST /repos/{owner}/{repo}/labels", {
         owner,
         repo,
@@ -46,6 +40,9 @@ export async function ensurePullRequestLabel(
         description: "Gittensor contributor context",
       });
       created = true;
+    } catch (error) {
+      // 422 means the label already exists in the repository — proceed to apply it
+      if ((error as { status?: number }).status !== 422) throw error;
     }
   }
 

@@ -30,7 +30,7 @@ describe("GitHub PR labels", () => {
     expect(calls.some((call) => call.includes("/repos/JSONbored/gittensory/labels"))).toBe(false);
   });
 
-  it("applies an existing repository label without creating it", async () => {
+  it("applies an existing repository label without creating it, even when the repo has more than 100 labels", async () => {
     const calls: string[] = [];
     vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = input.toString();
@@ -38,7 +38,10 @@ describe("GitHub PR labels", () => {
       calls.push(`${method} ${url}`);
       if (url.includes("/access_tokens")) return Response.json({ token: "installation-token" });
       if (url.includes("/issues/4/labels") && method === "GET") return Response.json([]);
-      if (url.includes("/repos/JSONbored/gittensory/labels") && method === "GET") return Response.json([{ name: "gittensor" }]);
+      if (url.includes("/repos/JSONbored/gittensory/labels") && method === "POST") {
+        // GitHub returns 422 when the label already exists (regardless of whether it was page 1 or page 101)
+        return Response.json({ message: "Validation Failed", errors: [{ code: "already_exists" }] }, { status: 422 });
+      }
       if (url.includes("/issues/4/labels") && method === "POST") return Response.json([{ name: "gittensor" }]);
       return new Response("unexpected", { status: 500 });
     });
@@ -48,7 +51,8 @@ describe("GitHub PR labels", () => {
     });
 
     expect(result).toEqual({ applied: true, created: false });
-    expect(calls.some((call) => call.startsWith("POST ") && call.endsWith("/repos/JSONbored/gittensory/labels"))).toBe(false);
+    // The POST attempt was made (and the 422 was swallowed), but created stays false
+    expect(calls.some((call) => call.startsWith("POST ") && call.endsWith("/repos/JSONbored/gittensory/labels"))).toBe(true);
   });
 
   it("creates a missing repository label when configured", async () => {
