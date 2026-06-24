@@ -1080,7 +1080,10 @@ export function buildLabelAudit(repo: RepositoryRecord | null, repoLabels: RepoL
       existsOnGitHub: liveLabels.includes(name),
     }));
   const missingConfiguredLabels = configuredLabels.filter((label) => !liveLabels.includes(label));
-  const suspiciousConfiguredLabels = configuredLabels.filter((label) => /^(status|state|source|bot|codex|gittensory|reward|score|miner|verified|risk)[:/-]?/i.test(label));
+  // Require a real separator (`:`/`/`/`-`) OR end-of-string after the keyword so this flags prefix-style labels
+  // (`status:ready`, `reward/x`) and bare keywords (`bot`) — but NOT mid-word matches like `bottleneck` (`bot`),
+  // `scoreboard` (`score`), or `riskier` (`risk`). The old optional+unanchored `[:/-]?` over-matched those.
+  const suspiciousConfiguredLabels = configuredLabels.filter((label) => /^(status|state|source|bot|codex|gittensory|reward|score|miner|verified|risk)([:/-]|$)/i.test(label));
   const findings: SignalFinding[] = [];
   if (repo?.registryConfig?.trustedLabelPipeline && missingConfiguredLabels.length > 0) {
     findings.push({
