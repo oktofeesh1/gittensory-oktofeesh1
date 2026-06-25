@@ -4,8 +4,14 @@ import { DEFAULT_ISSUE_DISCOVERY_SHARE, DEFAULT_SCORING_CONSTANTS, detectActiveM
 import { buildScorePreview, calculateTimeDecay, makeScorePreviewRecord, resolveTimeDecay } from "../../src/scoring/preview";
 import { unmodeledScoringConstantsFingerprint } from "../../src/upstream/unmodeled-scoring-drift";
 import type { ScorePreviewInput } from "../../src/scoring/preview";
-import type { RepositoryRecord, ScoringModelSnapshotRecord } from "../../src/types";
+import type { JsonValue, RepositoryRecord, ScoringModelSnapshotRecord } from "../../src/types";
 import { createTestEnv } from "../helpers/d1";
+
+// A realistic constants.py body — at least MIN_RECOGNIZED_SCORING_CONSTANTS (8) recognized constants — so a
+// refresh is treated as a genuine raw-github fetch rather than tripping the semantic-garbage sanity floor.
+// None of these are active-model indicators or values the tests below override.
+const VALID_CONSTANTS_PY =
+  "ISSUES_TREASURY_EMISSION_SHARE = 0.1\nPR_LOOKBACK_DAYS = 30\nCONTRIBUTION_SCORE_FOR_FULL_BONUS = 1500\nMIN_VALID_MERGED_PRS = 3\nMIN_CREDIBILITY = 0.8\nMIN_VALID_SOLVED_ISSUES = 3\nMIN_ISSUE_CREDIBILITY = 0.8\nMIN_TOKEN_SCORE_FOR_VALID_ISSUE = 5\n";
 
 const snapshot: ScoringModelSnapshotRecord = {
   id: "score-model-fixture",
@@ -122,7 +128,7 @@ BARE = .5_0
     const env = createTestEnv({ GITHUB_PUBLIC_TOKEN: "token" });
     vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
       const url = input.toString();
-      if (url.includes("constants.py")) return new Response("MERGED_PR_BASE_SCORE = 25\n");
+      if (url.includes("constants.py")) return new Response(VALID_CONSTANTS_PY + "MERGED_PR_BASE_SCORE = 25\n");
       if (url.includes("programming_languages.json")) return Response.json({});
       return new Response("not found", { status: 404 });
     });
@@ -314,7 +320,7 @@ NOVELTY_BONUS_SCALAR = 3
       const url = input.toString();
       fetchedUrls.push(url);
       if (url.includes("constants.py")) {
-        return new Response("MIN_TOKEN_SCORE_FOR_BASE_SCORE = 5\nMAX_CODE_DENSITY_MULTIPLIER = 1.15\n");
+        return new Response(VALID_CONSTANTS_PY + "MIN_TOKEN_SCORE_FOR_BASE_SCORE = 5\nMAX_CODE_DENSITY_MULTIPLIER = 1.15\n");
       }
       if (url.includes("programming_languages.json")) return Response.json({ TypeScript: 1 });
       return new Response("not found", { status: 404 });
@@ -335,7 +341,7 @@ NOVELTY_BONUS_SCALAR = 3
     const env = createTestEnv();
     vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
       const url = input.toString();
-      if (url.includes("constants.py")) return new Response("MERGED_PR_BASE_SCORE = 25\n");
+      if (url.includes("constants.py")) return new Response(VALID_CONSTANTS_PY + "MERGED_PR_BASE_SCORE = 25\n");
       if (url.includes("programming_languages.json")) return Response.json({});
       return new Response("not found", { status: 404 });
     });
@@ -389,7 +395,7 @@ NOVELTY_BONUS_SCALAR = 3
     const manyUnmodeled = Array.from({ length: 15 }, (_, index) => `UNMODELED_CONST_${String(index).padStart(2, "0")} = ${index + 1}`).join("\n");
     vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
       const url = input.toString();
-      if (url.includes("constants.py")) return new Response(manyUnmodeled);
+      if (url.includes("constants.py")) return new Response(VALID_CONSTANTS_PY + manyUnmodeled);
       if (url.includes("programming_languages.json")) return Response.json({});
       return new Response("not found", { status: 404 });
     });
@@ -414,7 +420,7 @@ NOVELTY_BONUS_SCALAR = 3
     vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
       const url = input.toString();
       fetchedUrls.push(url);
-      if (url.includes("constants.py")) return new Response("SRC_TOK_SATURATION_SCALE = 58.0\nNOVELTY_BONUS_SCALAR = 3\n");
+      if (url.includes("constants.py")) return new Response(VALID_CONSTANTS_PY + "SRC_TOK_SATURATION_SCALE = 58.0\nNOVELTY_BONUS_SCALAR = 3\n");
       if (url.includes("programming_languages.json")) return Response.json({ TypeScript: 1 });
       return new Response("not found", { status: 404 });
     });
@@ -442,7 +448,7 @@ NOVELTY_BONUS_SCALAR = 3
     const EXPECTED_SHA = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
     vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
       const url = input.toString();
-      if (url.includes("constants.py")) return new Response("MERGED_PR_BASE_SCORE = 25\n");
+      if (url.includes("constants.py")) return new Response(VALID_CONSTANTS_PY + "MERGED_PR_BASE_SCORE = 25\n");
       if (url.includes("programming_languages.json")) return Response.json({});
       // Upstream HEAD SHA endpoint: api.github.com/repos/{owner}/{repo}/commits/{ref}
       if (url.includes("api.github.com") && url.includes("/commits/main")) return Response.json({ sha: EXPECTED_SHA });
@@ -461,7 +467,7 @@ NOVELTY_BONUS_SCALAR = 3
     const env = createTestEnv({ GITHUB_PUBLIC_TOKEN: "token" });
     vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
       const url = input.toString();
-      if (url.includes("constants.py")) return new Response("MERGED_PR_BASE_SCORE = 25\n");
+      if (url.includes("constants.py")) return new Response(VALID_CONSTANTS_PY + "MERGED_PR_BASE_SCORE = 25\n");
       if (url.includes("programming_languages.json")) return Response.json({});
       // SHA endpoint fails — network error
       if (url.includes("api.github.com") && url.includes("/commits/")) throw new Error("network error");
@@ -484,7 +490,7 @@ NOVELTY_BONUS_SCALAR = 3
       const url = input.toString();
       fetchedUrls.push(url);
       if (url.includes("api.github.com") && url.includes("/commits/test")) return Response.json({ sha: SHA });
-      if (url.includes("constants.py")) return new Response("MERGED_PR_BASE_SCORE = 25\n");
+      if (url.includes("constants.py")) return new Response(VALID_CONSTANTS_PY + "MERGED_PR_BASE_SCORE = 25\n");
       if (url.includes("programming_languages.json")) return Response.json({});
       return new Response("not found", { status: 404 });
     });
@@ -504,7 +510,7 @@ NOVELTY_BONUS_SCALAR = 3
     // 1) A good refresh persists a verified raw-github snapshot.
     vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
       const url = input.toString();
-      if (url.includes("constants.py")) return new Response("MERGED_PR_BASE_SCORE = 25\nOSS_EMISSION_SHARE = 0.5\n");
+      if (url.includes("constants.py")) return new Response(VALID_CONSTANTS_PY + "MERGED_PR_BASE_SCORE = 25\nOSS_EMISSION_SHARE = 0.5\n");
       if (url.includes("programming_languages.json")) return Response.json({ TypeScript: 1 });
       return new Response("not found", { status: 404 });
     });
@@ -521,6 +527,45 @@ NOVELTY_BONUS_SCALAR = 3
     expect(frozen.warnings.join(" ")).toMatch(/froze the last-good snapshot/i);
     // No defaults snapshot was persisted — the latest is still the verified last-good.
     await expect(getLatestScoringModelSnapshot(env)).resolves.toMatchObject({ id: good.id, sourceKind: "raw-github" });
+  });
+
+  it("freezes the last-good snapshot when a 200 constants body is semantically garbage (LFS/HTML/truncated)", async () => {
+    const env = createTestEnv();
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes("constants.py")) return new Response(VALID_CONSTANTS_PY + "OSS_EMISSION_SHARE = 0.42\n");
+      if (url.includes("programming_languages.json")) return Response.json({});
+      return new Response("not found", { status: 404 });
+    });
+    const good = await refreshScoringModelSnapshot(env);
+    expect(good.sourceKind).toBe("raw-github");
+
+    // Upstream now returns a 200 Git-LFS pointer — 0 recognized scoring constants. Fail-closed: freeze last-good.
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes("constants.py")) return new Response("version https://git-lfs.github.com/spec/v1\noid sha256:abc123\nsize 1234\n");
+      if (url.includes("programming_languages.json")) return Response.json({});
+      return new Response("not found", { status: 404 });
+    });
+    const frozen = await refreshScoringModelSnapshot(env);
+    expect(frozen.id).toBe(good.id);
+    expect(frozen.sourceKind).toBe("raw-github"); // NOT reverted to defaults
+    expect(frozen.constants.OSS_EMISSION_SHARE).toBe(0.42);
+    expect(frozen.warnings.join(" ")).toMatch(/parsed only \d+ recognized constant/i);
+  });
+
+  it("bootstraps to fallback (not raw-github) when a 200 constants body is garbage and there is no last-good", async () => {
+    const env = createTestEnv();
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes("constants.py")) return new Response("<!DOCTYPE html><html><body>rate limited</body></html>");
+      if (url.includes("programming_languages.json")) return Response.json({});
+      return new Response("not found", { status: 404 });
+    });
+    const refreshed = await refreshScoringModelSnapshot(env);
+    expect(refreshed.sourceKind).toBe("fallback"); // labeled fallback, NOT a deceptive raw-github
+    expect(refreshed.warnings.join(" ")).toMatch(/parsed only \d+ recognized constant/i);
+    expect(refreshed.constants.MERGED_PR_BASE_SCORE).toBe(25); // the hardcoded default
   });
 
   it("bootstraps to defaults (fallback) on a failed fetch ONLY when there is no verified last-good", async () => {
@@ -550,7 +595,7 @@ NOVELTY_BONUS_SCALAR = 3
     vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
       const url = input.toString();
       if (url.includes("api.github.com") && url.includes("/commits/")) throw new Error("network failure");
-      if (url.includes("constants.py")) return new Response("MERGED_PR_BASE_SCORE = 25\n");
+      if (url.includes("constants.py")) return new Response(VALID_CONSTANTS_PY + "MERGED_PR_BASE_SCORE = 25\n");
       if (url.includes("programming_languages.json")) return Response.json({});
       return new Response("not found", { status: 404 });
     });
@@ -565,7 +610,7 @@ NOVELTY_BONUS_SCALAR = 3
     vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
       const url = input.toString();
       if (url.includes("api.github.com") && url.includes("/commits/")) return Response.json({ sha: 42 });
-      if (url.includes("constants.py")) return new Response("MERGED_PR_BASE_SCORE = 25\n");
+      if (url.includes("constants.py")) return new Response(VALID_CONSTANTS_PY + "MERGED_PR_BASE_SCORE = 25\n");
       if (url.includes("programming_languages.json")) return Response.json({});
       return new Response("not found", { status: 404 });
     });
@@ -579,7 +624,7 @@ NOVELTY_BONUS_SCALAR = 3
     vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
       const url = input.toString();
       if (url.includes("api.github.com") && url.includes("/commits/")) return Response.json({ sha: "" });
-      if (url.includes("constants.py")) return new Response("MERGED_PR_BASE_SCORE = 25\n");
+      if (url.includes("constants.py")) return new Response(VALID_CONSTANTS_PY + "MERGED_PR_BASE_SCORE = 25\n");
       if (url.includes("programming_languages.json")) return Response.json({});
       return new Response("not found", { status: 404 });
     });
@@ -1168,12 +1213,37 @@ NOVELTY_BONUS_SCALAR = 3
     expect(fallbackCredibility.gates.baseTokenGatePassed).toBe(false);
   });
 
+  it("falls back to neutral credibility when any evidence count is non-finite (not just mergedPullRequests)", () => {
+    const score = (payload: Record<string, JsonValue>) =>
+      buildScorePreview({
+        repo,
+        snapshot,
+        contributorEvidence: { login: "riskdev", generatedAt: "2026-05-23T00:00:00.000Z", payload },
+        input: { repoFullName: repo.fullName, sourceTokenScore: 100, totalTokenScore: 200, sourceLines: 10, openPrCount: 0 },
+      });
+
+    // A malformed `stale` or `unlinked` would NaN-poison the credibility multiplier and the whole
+    // estimated score; each must degrade to the same neutral 0.8 the `merged` guard already produced.
+    for (const malformed of [
+      { mergedPullRequests: 5, stalePullRequests: "n/a", unlinkedPullRequests: 0 },
+      { mergedPullRequests: 5, stalePullRequests: 0, unlinkedPullRequests: "bad" },
+    ] satisfies Record<string, JsonValue>[]) {
+      const preview = score(malformed);
+      expect(preview.gates.credibilityObserved).toBe(0.8);
+      expect(Number.isFinite(preview.scoreEstimate.estimatedMergedScore)).toBe(true);
+    }
+
+    // Well-formed counts still flow through the arithmetic rather than the guard.
+    const wellFormed = score({ mergedPullRequests: 5, stalePullRequests: 2, unlinkedPullRequests: 1 });
+    expect(wellFormed.gates.credibilityObserved).toBeCloseTo(0.87, 5);
+  });
+
   it("refreshes scoring snapshots from upstream fixtures and falls back cleanly", async () => {
     const env = createTestEnv({ GITHUB_PUBLIC_TOKEN: "token" });
     vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
       const url = input.toString();
       if (url.includes("constants.py")) {
-        return new Response("OSS_EMISSION_SHARE = 0.90\nMERGED_PR_BASE_SCORE = 25\nSRC_TOK_SATURATION_SCALE = 58\nMIN_TOKEN_SCORE_FOR_BASE_SCORE = 5\nMAX_CODE_DENSITY_MULTIPLIER = 1.15\n");
+        return new Response(VALID_CONSTANTS_PY + "OSS_EMISSION_SHARE = 0.90\nMERGED_PR_BASE_SCORE = 25\nSRC_TOK_SATURATION_SCALE = 58\nMIN_TOKEN_SCORE_FOR_BASE_SCORE = 5\nMAX_CODE_DENSITY_MULTIPLIER = 1.15\n");
       }
       if (url.includes("programming_languages.json")) return Response.json({ TypeScript: 1, Python: 0.8 });
       return new Response("not found", { status: 404 });
@@ -1448,6 +1518,50 @@ NOVELTY_BONUS_SCALAR = 3
       // Same PR on a repo using the default 12h grace → past grace, so it decays.
       const repoDefault: RepositoryRecord = { ...repo, registryConfig: { ...repo.registryConfig!, timeDecay: null } };
       expect(buildScorePreview({ repo: repoDefault, snapshot, input }).scoreEstimate.timeDecayMultiplier).toBeLessThan(1);
+    });
+  });
+
+  describe("single-source fallbacks (#812)", () => {
+    it("the density-era fallback constants are declared in DEFAULT_SCORING_CONSTANTS (no longer silent literals)", () => {
+      expect(DEFAULT_SCORING_CONSTANTS.MIN_TOKEN_SCORE_FOR_BASE_SCORE).toBe(5);
+      expect(DEFAULT_SCORING_CONSTANTS.MAX_CODE_DENSITY_MULTIPLIER).toBe(1.15);
+      expect(DEFAULT_SCORING_CONSTANTS.MERGED_PR_BASE_SCORE).toBe(25);
+      expect(DEFAULT_SCORING_CONSTANTS.SRC_TOK_SATURATION_SCALE).toBe(58);
+    });
+
+    it("a preview with an empty constants object resolves every fallback from DEFAULT_SCORING_CONSTANTS, matching an explicit-defaults preview", () => {
+      const input: ScorePreviewInput = { repoFullName: repo.fullName, sourceTokenScore: 60, totalTokenScore: 90, sourceLines: 50, openPrCount: 0, credibility: 1 };
+      const emptyConstants = buildScorePreview({
+        repo,
+        snapshot: { ...snapshot, activeModel: "pending_saturation_model" as const, constants: {} },
+        input,
+      });
+      const explicitDefaults = buildScorePreview({
+        repo,
+        snapshot: { ...snapshot, activeModel: "pending_saturation_model" as const, constants: { ...DEFAULT_SCORING_CONSTANTS } },
+        input,
+      });
+      expect(emptyConstants.scoreEstimate).toEqual(explicitDefaults.scoreEstimate);
+      expect(emptyConstants.gates).toEqual(explicitDefaults.gates);
+      expect(emptyConstants.effectiveEstimatedScore).toBe(explicitDefaults.effectiveEstimatedScore);
+      expect(emptyConstants.effectiveEstimatedScore).toBeGreaterThan(0);
+    });
+
+    it("retains the density model branch as a supported activeModel (the #812 'if density is dead' condition is false)", () => {
+      const densityPreview = buildScorePreview({
+        repo,
+        snapshot: { ...snapshot, activeModel: "current_density_model" as const, constants: { ...DEFAULT_SCORING_CONSTANTS } },
+        input: { repoFullName: repo.fullName, sourceTokenScore: 60, totalTokenScore: 90, sourceLines: 50, openPrCount: 0, credibility: 1 },
+      });
+      expect(densityPreview.scoreEstimate.densityMultiplier).toBeGreaterThan(0);
+      expect(densityPreview.scoreEstimate.densityMultiplier).toBeLessThanOrEqual(DEFAULT_SCORING_CONSTANTS.MAX_CODE_DENSITY_MULTIPLIER!);
+      expect(densityPreview.effectiveEstimatedScore).toBeGreaterThan(0);
+    });
+
+    it("treats density-era constants as modeled (not unmodeled drift) once single-sourced in DEFAULT_SCORING_CONSTANTS", () => {
+      expect(
+        findUnmodeledUpstreamConstants("MIN_TOKEN_SCORE_FOR_BASE_SCORE = 5\nMAX_CODE_DENSITY_MULTIPLIER = 1.15\n"),
+      ).toEqual([]);
     });
   });
 });

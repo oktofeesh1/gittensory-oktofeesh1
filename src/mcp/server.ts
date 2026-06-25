@@ -20,6 +20,7 @@ import {
   getPendingAgentAction,
   getRepository,
   getRepositorySettings,
+  isGlobalAgentFrozen,
   getRepoQueueTrendSnapshot,
   listAgentAuditEvents,
   listCheckSummaries,
@@ -69,6 +70,7 @@ import { loadOrComputeBurdenForecastResponse } from "../services/burden-forecast
 import { buildMcpClientTelemetry } from "../services/client-telemetry";
 import { loadOrComputeRepoOutcomePatternsResponse } from "../services/repo-outcome-patterns";
 import { buildRepoOutcomeCalibration, outcomeCalibrationSummary } from "../services/outcome-calibration";
+import { computeFleetAnalytics } from "../orb/analytics";
 import { buildUnavailableQueueTrendReport } from "../services/queue-trends";
 import {
   applyMcpPlanningChoices,
@@ -142,6 +144,18 @@ const ownerRepoWindowShape = {
   owner: z.string().min(1),
   repo: z.string().min(1),
   windowDays: z.number().int().positive().optional(),
+};
+
+const windowOnlyShape = {
+  windowDays: z.number().int().positive().optional(),
+};
+
+const fleetAnalyticsOutputSchema = {
+  windowDays: z.number().optional(),
+  instanceCount: z.number().optional(),
+  fleet: z.unknown().optional(),
+  instances: z.array(z.unknown()).optional(),
+  outliers: z.array(z.unknown()).optional(),
 };
 
 const loginShape = {
@@ -1055,6 +1069,17 @@ export class GittensoryMcp {
     );
 
     server.registerTool(
+      "gittensory_get_fleet_analytics",
+      {
+        description:
+          "Operator-only: aggregated gate-calibration analytics across the self-host fleet — median merge/close precision, false-positive + reversal rates, cycle-time percentiles, and per-instance outliers. Measurement only.",
+        inputSchema: windowOnlyShape,
+        outputSchema: fleetAnalyticsOutputSchema,
+      },
+      async (input) => this.toolResult(await this.getFleetAnalytics(input)),
+    );
+
+    server.registerTool(
       "gittensory_get_contributor_profile",
       {
         description: "Return an evidence-backed Gittensory contributor profile for a GitHub login.",
@@ -1922,6 +1947,25 @@ export class GittensoryMcp {
     };
   }
 
+  // Operator-only gate: the fleet view aggregates ALL self-hosters' calibration, so a session must be an
+  // operator; private-token / static identities are trusted (the same model as the other measurement tools).
+  private async requireOperatorAccess(): Promise<void> {
+    if (this.identity.kind !== "session") return;
+    const scope = await this.loadSessionAccessScope();
+    if (scope.operator) return;
+    throw new Error("Forbidden: operator authority is required for fleet analytics.");
+  }
+
+  private async getFleetAnalytics(input: { windowDays?: number | undefined }): Promise<ToolPayload> {
+    await this.requireOperatorAccess();
+    const report = await computeFleetAnalytics(this.env, input.windowDays !== undefined ? { windowDays: input.windowDays } : {});
+    const merge = report.fleet.mergePrecision !== null ? `${Math.round(report.fleet.mergePrecision * 100)}%` : "n/a";
+    return {
+      summary: `Fleet calibration over ${report.windowDays}d: ${report.instanceCount} instance(s), median merge precision ${merge}, ${report.outliers.length} outlier(s).`,
+      data: report as unknown as Record<string, unknown>,
+    };
+  }
+
   private async loadOpenQueueCounts(fullName: string): Promise<{ openIssues: number; openPullRequests: number }> {
     const [totals, openIssues, openPullRequests] = await Promise.all([
       getLatestRepoGithubTotalsSnapshot(this.env, fullName),
@@ -2270,7 +2314,7 @@ export class GittensoryMcp {
     const autonomy = settings.autonomy;
     const actingActionClasses = AGENT_ACTION_CLASSES.filter((actionClass) => isActingAutonomyLevel(resolveAutonomy(autonomy, actionClass)));
     const installation = repo?.installationId ? await getInstallation(this.env, repo.installationId) : null;
-    const mode = resolveAgentActionMode({ globalPaused: isGlobalAgentPause(this.env), agentPaused: settings.agentPaused, agentDryRun: settings.agentDryRun });
+    const mode = resolveAgentActionMode({ globalPaused: isGlobalAgentPause(this.env) || (await isGlobalAgentFrozen(this.env)), agentPaused: settings.agentPaused, agentDryRun: settings.agentDryRun });
     const permissionReadiness = resolveAgentPermissionReadiness({ autonomy, installationPermissions: installation?.permissions ?? null });
     return {
       summary: `Agent automation for ${fullName}: mode=${mode}, ${actingActionClasses.length} acting class(es), ${pendingActionCount} pending approval(s).`,

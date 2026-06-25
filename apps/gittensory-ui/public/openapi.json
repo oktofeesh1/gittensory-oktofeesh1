@@ -15259,6 +15259,18 @@
           "503": {
             "description": "Public stats are temporarily unavailable"
           }
+        }
+      }
+    },
+    "/v1/orb/ingest": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "Batch accepted; returns { accepted: number }"
+          },
+          "400": {
+            "description": "Malformed JSON or invalid payload shape"
+          }
         },
         "security": [
           {

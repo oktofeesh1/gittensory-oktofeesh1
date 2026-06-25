@@ -66,6 +66,40 @@ export type GateCheckEvaluation = {
   warnings: AdvisoryFinding[];
 };
 
+// AI-JUDGMENT blocker codes (#ai-ci-refutation): a gate failure driven SOLELY by these is the dual-model AI
+// reviewer's OPINION, not a deterministic fact. Shared by the disposition refutation (agent-actions) and the
+// public-comment reconciliation so the merge/close ACTION and the rendered comment always agree.
+// `ai_review_inconclusive` is deliberately EXCLUDED — that is a "could not review" HOLD, not a false defect.
+export const AI_JUDGMENT_BLOCKER_CODES = new Set<string>(["ai_consensus_defect", "ai_review_split"]);
+
+/** True when the gate FAILED *solely* because of AI-judgment blockers (every blocker is an AI-judgment code).
+ *  An empty blocker list is NOT an AI-judgment-only failure (there is nothing to refute). PURE. */
+export function isAiJudgmentOnlyFailure(evaluation: GateCheckEvaluation): boolean {
+  return evaluation.conclusion === "failure" && evaluation.blockers.length > 0 && evaluation.blockers.every((blocker) => AI_JUDGMENT_BLOCKER_CODES.has(blocker.code));
+}
+
+/**
+ * Reconcile a gate evaluation with the deterministic CI for the PUBLIC review comment (#ai-ci-refutation).
+ * When the gate FAILED solely on an AI-judgment blocker (ai_consensus_defect / ai_review_split) but the real CI
+ * is GREEN, the AI claim is refuted by the validator — so the comment must render SUCCESS (advisory), matching
+ * the disposition (planAgentMaintenanceActions merges such a PR) instead of a contradictory red "blocked/closed"
+ * headline + Gate row. The AI concern stays VISIBLE without double-listing: the specific consensus defect still
+ * surfaces from the advisory findings as a raised concern under the green verdict, so we only clear the gate's
+ * hard blockers here. `enabled` is the caller's grounding+convergence gate (passed in so this stays a PURE,
+ * unit-testable function and the processor carries no branch); `enabled` false, `ciState !== "passed"`, or a
+ * non-AI-only failure ⇒ the evaluation is returned UNCHANGED.
+ */
+export function reconcileGateEvaluationForGreenCi(evaluation: GateCheckEvaluation, ciState: "passed" | "failed" | "unverified", enabled: boolean): GateCheckEvaluation {
+  if (!enabled || ciState !== "passed" || !isAiJudgmentOnlyFailure(evaluation)) return evaluation;
+  return {
+    ...evaluation,
+    conclusion: "success",
+    title: "Gittensory Gate passed",
+    summary: "The AI review raised a concern, but the deterministic checks (CI) are green — the concern is advisory, not blocking.",
+    blockers: [],
+  };
+}
+
 export function buildRepositoryAdvisory(repo: RepositoryRecord | null, fullName: string): Advisory {
   const findings: AdvisoryFinding[] = [];
   if (!repo) {
@@ -359,19 +393,6 @@ export function evaluateGateCheck(advisoryResult: Advisory, policy: GateCheckPol
       warnings,
     };
   }
-  // Fail-CLOSED AI hold (#ai-fail-closed): the block-mode AI review could not return a usable verdict, so the
-  // gate is HELD (neutral) for a human rather than passed automatically. NEVER a failure → a contributor PR is
-  // never auto-CLOSED because an AI model hiccupped; it re-evaluates on the next update.
-  if (advisoryResult.findings.some((finding) => finding.code === "ai_review_inconclusive")) {
-    return {
-      enabled: true,
-      conclusion: "neutral",
-      title: "Gittensory Gate — held for human review",
-      summary: "The AI review could not be completed for this change, so the gate is held for a human reviewer rather than passed automatically. It re-evaluates on the next update.",
-      blockers: [],
-      warnings,
-    };
-  }
   // Merge-readiness composite (#551): when set, escalate every sub-gate to its mode so they roll into one
   // pass/fail. When off, this is a no-op and each sub-gate keeps its own mode.
   const effective = applyMergeReadinessGate(policy);
@@ -404,6 +425,21 @@ export function evaluateGateCheck(advisoryResult: Advisory, policy: GateCheckPol
     };
   }
   if (blockers.length === 0) {
+    // Fail-CLOSED AI hold (#ai-fail-closed, #audit-3.5): with NO deterministic blocker, a block-mode AI review
+    // that could not return a usable verdict HOLDS the gate (neutral) for a human rather than passing
+    // automatically — NEVER a failure, so a contributor PR is never auto-CLOSED because a model hiccupped. This
+    // is evaluated AFTER the deterministic blockers above, so a real violation (secret_leak, duplicate,
+    // missing-issue, slop, quality) still blocks: an inconclusive AI can no longer bury a blocked PR in a hold.
+    if (advisoryResult.findings.some((finding) => finding.code === "ai_review_inconclusive")) {
+      return {
+        enabled: true,
+        conclusion: "neutral",
+        title: "Gittensory Gate — held for human review",
+        summary: "The AI review could not be completed for this change, so the gate is held for a human reviewer rather than passed automatically. It re-evaluates on the next update.",
+        blockers: [],
+        warnings,
+      };
+    }
     return {
       enabled: true,
       conclusion: "success",
@@ -669,7 +705,10 @@ function conclusionForSeverity(severity: AdvisorySeverity, findings: AdvisoryFin
 }
 
 function isEvaluationBlocker(code: string): boolean {
-  return code === "repo_not_registered" || code === "repo_not_seen" || code === "pr_not_cached";
+  // pre_merge_check_unresolved: an enforced path-gated pre-merge check whose changed-file set could not be
+  // resolved — gittensory cannot evaluate it yet, so the gate is NEUTRAL (held) and re-evaluates on the next
+  // sync, rather than auto-merging past the unverified requirement or hard-closing on a transient miss. (#review-audit)
+  return code === "repo_not_registered" || code === "repo_not_seen" || code === "pr_not_cached" || code === "pre_merge_check_unresolved";
 }
 
 function isConfiguredGateBlocker(code: string, policy: GateCheckPolicy): boolean {
@@ -688,6 +727,12 @@ function isConfiguredGateBlocker(code: string, policy: GateCheckPolicy): boolean
   // (GITTENSORY_REVIEW_SAFETY); when the flag is off the finding never exists, so this branch is unreachable and the
   // gate verdict is byte-identical to today.
   if (code === "secret_leak") return true;
+  // A maintainer pre-merge check (#review-pre-merge-checks) marked `enforce: true` produces this DETERMINISTIC
+  // finding when it fails (a required title/description phrase or label is missing). It always blocks: the
+  // per-check `enforce` flag in `.gittensory.yml` IS the opt-in (mirroring secret_leak — the finding only exists
+  // when the maintainer configured an enforced check). The advisory variant (`pre_merge_check_failed`) is a plain
+  // warning and is never blocked here. No AI judgment is involved, so this can never cause an AI false-close.
+  if (code === "pre_merge_check_required") return true;
   // Focus-manifest policy (#555): the three enforceable manifest findings block ONLY when the maintainer
   // opts into manifestPolicy: block. Default off/advisory keeps them advisory-only.
   if (code === "manifest_blocked_path" || code === "manifest_linked_issue_required" || code === "manifest_missing_tests") {
