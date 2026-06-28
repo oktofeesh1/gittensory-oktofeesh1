@@ -21,6 +21,7 @@ import {
   scanPatchForRedos,
   scanRedos,
 } from "../dist/analyzers/redos.js";
+import { scanAssetWeight } from "../dist/analyzers/asset-weight.js";
 import {
   classifyAddedFile,
   isSafeToCheck,
@@ -29,6 +30,7 @@ import {
   matchesPypiVersion,
   scanProvenance,
 } from "../dist/analyzers/provenance.js";
+import {
   findOwners,
   parseCodeowners,
   patternToRegex,
@@ -1504,6 +1506,78 @@ test("scanProvenance: handles undefined files gracefully", async () => {
   assert.deepEqual(findings, []);
 });
 
+const treeReply = (tree) => ({ ok: true, json: async () => ({ tree }) });
+const HEAD_SHA = "1111111111111111111111111111111111111111";
+const BASE_SHA = "2222222222222222222222222222222222222222";
+
+test("scanAssetWeight: flags a large newly-added binary, ignores small + non-binary files", async () => {
+  const findings = await scanAssetWeight(
+    {
+      repoFullName: "o/r",
+      prNumber: 1,
+      headSha: HEAD_SHA,
+      githubToken: "t",
+      files: [
+        { path: "img/logo.png", status: "added" },
+        { path: "icon.svg", status: "added" },
+        { path: "src/x.ts", status: "added" },
+        { path: "tiny.gif", status: "added" },
+      ],
+    },
+    async () =>
+      treeReply([
+        { path: "img/logo.png", type: "blob", size: 250000 },
+        { path: "tiny.gif", type: "blob", size: 2000 },
+      ]),
+  );
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].path, "img/logo.png");
+  assert.equal(findings[0].status, "added");
+  assert.equal(findings[0].bytes, 250000);
+  assert.equal(findings[0].deltaBytes, 250000);
+});
+
+test("scanAssetWeight: flags a binary that GREW past the threshold (base vs head)", async () => {
+  const fetchImpl = async (url) =>
+    String(url).includes(BASE_SHA)
+      ? treeReply([{ path: "video.mp4", type: "blob", size: 50000 }])
+      : treeReply([{ path: "video.mp4", type: "blob", size: 250000 }]);
+  const findings = await scanAssetWeight(
+    {
+      repoFullName: "o/r",
+      prNumber: 1,
+      headSha: HEAD_SHA,
+      baseSha: BASE_SHA,
+      githubToken: "t",
+      files: [{ path: "video.mp4", status: "modified" }],
+    },
+    fetchImpl,
+  );
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].status, "grown");
+  assert.equal(findings[0].deltaBytes, 200000);
+  assert.equal(findings[0].bytes, 250000);
+});
+
+test("scanAssetWeight: small growth is not flagged", async () => {
+  const fetchImpl = async (url) =>
+    String(url).includes(BASE_SHA)
+      ? treeReply([{ path: "a.png", type: "blob", size: 300000 }])
+      : treeReply([{ path: "a.png", type: "blob", size: 310000 }]);
+  const findings = await scanAssetWeight(
+    {
+      repoFullName: "o/r",
+      prNumber: 1,
+      headSha: HEAD_SHA,
+      baseSha: BASE_SHA,
+      githubToken: "t",
+      files: [{ path: "a.png", status: "modified" }],
+    },
+    fetchImpl,
+  );
+  assert.deepEqual(findings, []);
+});
+
 // ---------------------------------------------------------------------------
 // renderBrief: provenance block
 // ---------------------------------------------------------------------------
@@ -1562,6 +1636,109 @@ test("buildBrief: provenance analyzer runs, flags binary file and missing npm at
       return { ok: false, status: 404, json: async () => ({}) };
     return { ok: true, json: async () => ({}) };
   };
+  try {
+    const brief = await buildBrief({
+      repoFullName: "o/r",
+      prNumber: 1,
+      files: [
+        { path: "native/tool.exe", status: "added" },
+        { path: "package.json", patch: '+    "no-attest": "1.0.0",' },
+      ],
+    });
+    assert.equal(brief.analyzerStatus.provenance, "ok");
+    assert.ok(brief.findings.provenance.length >= 2);
+    assert.match(brief.promptSection, /provenance/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("scanAssetWeight: fail-safe — no token, no binaries, or failed fetch returns []", async () => {
+  const tree = async () =>
+    treeReply([{ path: "a.png", type: "blob", size: 999999 }]);
+  assert.deepEqual(
+    await scanAssetWeight(
+      { repoFullName: "o/r", prNumber: 1, headSha: HEAD_SHA, files: [{ path: "a.png", status: "added" }] },
+      tree,
+    ),
+    [],
+  ); // no token
+  assert.deepEqual(
+    await scanAssetWeight(
+      { repoFullName: "o/r", prNumber: 1, headSha: HEAD_SHA, githubToken: "t", files: [{ path: "readme.md", status: "added" }] },
+      tree,
+    ),
+    [],
+  ); // no binary files
+  assert.deepEqual(
+    await scanAssetWeight(
+      { repoFullName: "o/r", prNumber: 1, headSha: HEAD_SHA, githubToken: "t", files: [{ path: "a.png", status: "added" }] },
+      async () => ({ ok: false, json: async () => ({}) }),
+    ),
+    [],
+  ); // tree fetch not OK
+});
+
+test("scanAssetWeight: rejects path-traversal repoFullName + non-SHA refs (no token-bearing fetch)", async () => {
+  let fetched = false;
+  const spy = async () => {
+    fetched = true;
+    return treeReply([{ path: "a.png", type: "blob", size: 999999 }]);
+  };
+  const file = { path: "a.png", status: "added" };
+  for (const repoFullName of ["a/b/../../x/y", "../evil", "owner/repo/extra", "o/.."]) {
+    assert.deepEqual(
+      await scanAssetWeight(
+        { repoFullName, prNumber: 1, headSha: HEAD_SHA, githubToken: "t", files: [file] },
+        spy,
+      ),
+      [],
+    );
+  }
+  assert.deepEqual(
+    await scanAssetWeight(
+      { repoFullName: "o/r", prNumber: 1, headSha: "main", githubToken: "t", files: [file] },
+      spy,
+    ),
+    [],
+  );
+  assert.equal(fetched, false, "the token-bearing fetch never runs for unsafe input");
+});
+
+test("renderBrief: renders the asset-weight block with human-readable sizes", () => {
+  const r = renderBrief({
+    assetWeight: [
+      { path: "img/logo.png", bytes: 2500000, deltaBytes: 2500000, status: "added" },
+      { path: "v.mp4", bytes: 300000, deltaBytes: 200000, status: "grown" },
+    ],
+  });
+  assert.match(r.promptSection, /Heavy binary assets/);
+  assert.match(r.promptSection, /`img\/logo\.png` adds 2\.4 MB/);
+  assert.match(r.promptSection, /`v\.mp4` grows \+195 KB to 293 KB/);
+});
+
+test("buildBrief: asset-weight analyzer runs", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) =>
+    String(url).includes("git/trees")
+      ? treeReply([{ path: "big.png", type: "blob", size: 300000 }])
+      : { ok: true, json: async () => ({}) };
+  try {
+    const brief = await buildBrief({
+      repoFullName: "o/r",
+      prNumber: 1,
+      headSha: HEAD_SHA,
+      githubToken: "t",
+      files: [{ path: "big.png", status: "added" }],
+    });
+    assert.equal(brief.analyzerStatus.assetWeight, "ok");
+    assert.equal(brief.findings.assetWeight.length, 1);
+    assert.match(brief.promptSection, /Heavy binary assets/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("codeOnly: blanks string messages, keeps ${...} interpolation bodies", () => {
   assert.equal(codeOnly('"a secret here"'), " ");
   assert.equal(codeOnly("'plain'"), " ");
@@ -1717,34 +1894,6 @@ test("buildBrief: secret-log analyzer runs (pure, no network)", async () => {
       repoFullName: "o/r",
       prNumber: 1,
       files: [
-        { path: "native/tool.exe", status: "added" },
-        { path: "package.json", patch: '+    "no-attest": "1.0.0",' },
-      ],
-    });
-    assert.equal(brief.analyzerStatus.provenance, "ok");
-    assert.ok(brief.findings.provenance.length >= 2);
-    assert.match(brief.promptSection, /provenance/);
-  } finally {
-    globalThis.fetch = realFetch;
-  }
-});
-
-test("buildBrief: provenance analyzer throw → degraded + partial", async () => {
-  const realFetch = globalThis.fetch;
-  // Cause all fetches to fail (provenance uses fetch for attestation checks)
-  globalThis.fetch = async () => { throw new Error("network down"); };
-  try {
-    const brief = await buildBrief({
-      repoFullName: "o/r",
-      prNumber: 1,
-      analyzers: ["provenance"],
-      files: [{ path: "package.json", patch: '+    "pkg": "1.0.0",' }],
-    });
-    // provenance fetch throws → degraded; binary scan still ran but that's pure
-    // The analyzer as a whole may succeed (binary scan is pure) or degrade on fetch.
-    // Because hasNpmAttestation catches fetch errors (fail-safe), the analyzer succeeds.
-    assert.equal(brief.analyzerStatus.provenance, "ok");
-    assert.equal(brief.partial, false);
         {
           path: "src/a.ts",
           patch: "@@ -1,0 +1,1 @@\n+console.log(req.headers.authorization);",
@@ -1754,6 +1903,24 @@ test("buildBrief: provenance analyzer throw → degraded + partial", async () =>
     assert.equal(brief.analyzerStatus.secretLog, "ok");
     assert.equal(brief.findings.secretLog.length, 1);
     assert.match(brief.promptSection, /Secrets \/ PII reaching a log/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("buildBrief: provenance analyzer fetch failure fails safe", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error("network down"); };
+  try {
+    const brief = await buildBrief({
+      repoFullName: "o/r",
+      prNumber: 1,
+      analyzers: ["provenance"],
+      files: [{ path: "package.json", patch: '+    "pkg": "1.0.0",' }],
+    });
+    assert.equal(brief.analyzerStatus.provenance, "ok");
+    assert.equal(brief.partial, false);
+    assert.deepEqual(brief.findings.provenance, []);
   } finally {
     globalThis.fetch = realFetch;
   }

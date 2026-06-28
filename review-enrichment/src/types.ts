@@ -123,6 +123,15 @@ export interface SecretLogFinding {
   category: "secret" | "pii" | "request-object";
 }
 
+/** A heavy binary asset the PR adds or grows. `bytes` is the size at headSha; `deltaBytes` is the growth vs base
+ *  (equal to `bytes` for a newly-added file). */
+export interface AssetWeightFinding {
+  path: string;
+  bytes: number;
+  deltaBytes: number;
+  status: "added" | "grown";
+}
+
 /** Structured analyzer output. Each analyzer fills its own key; more land as analyzers ship (#1477/#1478). */
 export interface BriefFindings {
   dependency?: DependencyFinding[];
@@ -135,6 +144,7 @@ export interface BriefFindings {
   provenance?: ProvenanceFinding[];
   codeowners?: CodeownersFinding[];
   secretLog?: SecretLogFinding[];
+  assetWeight?: AssetWeightFinding[];
 }
 
 export type AnalyzerStatus = "ok" | "degraded" | "skipped";
