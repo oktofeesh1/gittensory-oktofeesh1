@@ -7,7 +7,7 @@
 // matching base size.
 import type { EnrichRequest, AssetWeightFinding } from "../types.js";
 
-const MAX_FILES = 50; // cap binary files inspected per PR
+const MAX_FINDINGS = 50; // keep the brief bounded after evaluating every changed binary candidate
 const THRESHOLD_BYTES = 100 * 1024; // flag a newly-added blob >= 100 KB, or growth >= 100 KB
 const GITHUB_API = "https://api.github.com";
 
@@ -95,8 +95,9 @@ function parseRepo(
 }
 
 /** Fetch every blob's byte size in the repo's git tree at `sha`. One recursive call. Empty map on an invalid SHA
- *  or a non-OK reply. `owner`/`repo` are validated by the caller; every segment is URL-encoded here (defense in
- *  depth) so nothing user-derived can break out of the intended API path. */
+ *  or a non-OK reply; throws on truncated recursive replies so the orchestrator degrades instead of trusting
+ *  partial data. `owner`/`repo` are validated by the caller; every segment is URL-encoded here (defense in depth)
+ *  so nothing user-derived can break out of the intended API path. */
 async function fetchTreeSizes(
   owner: string,
   repo: string,
@@ -119,7 +120,9 @@ async function fetchTreeSizes(
   if (!res.ok) return sizes;
   const json = (await res.json()) as {
     tree?: Array<{ path?: string; type?: string; size?: number }>;
+    truncated?: boolean;
   };
+  if (json.truncated) throw new Error("github_tree_truncated");
   for (const entry of json.tree ?? []) {
     if (entry.type === "blob" && typeof entry.size === "number" && entry.path) {
       sizes.set(entry.path, entry.size);
@@ -140,9 +143,9 @@ export async function scanAssetWeight(
   const repo = parseRepo(req.repoFullName);
   if (!repo) return [];
 
-  const binaries = (req.files ?? [])
-    .filter((f) => f.status !== "removed" && isBinaryAsset(f.path))
-    .slice(0, MAX_FILES);
+  const binaries = (req.files ?? []).filter(
+    (f) => f.status !== "removed" && isBinaryAsset(f.path),
+  );
   if (!binaries.length) return [];
 
   const headSizes = await fetchTreeSizes(
@@ -198,5 +201,7 @@ export async function scanAssetWeight(
       });
     }
   }
-  return findings;
+  return findings
+    .sort((a, b) => b.deltaBytes - a.deltaBytes)
+    .slice(0, MAX_FINDINGS);
 }

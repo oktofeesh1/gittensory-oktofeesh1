@@ -1537,6 +1537,67 @@ test("scanAssetWeight: flags a large newly-added binary, ignores small + non-bin
   assert.equal(findings[0].deltaBytes, 250000);
 });
 
+test("scanAssetWeight: evaluates large binaries after the first 50 candidate paths", async () => {
+  const smallFiles = Array.from({ length: 50 }, (_, i) => ({
+    path: `small-${i}.png`,
+    status: "added",
+  }));
+  const files = [...smallFiles, { path: "late-large.png", status: "added" }];
+  const findings = await scanAssetWeight(
+    {
+      repoFullName: "o/r",
+      prNumber: 1,
+      headSha: HEAD_SHA,
+      githubToken: "t",
+      files,
+    },
+    async () =>
+      treeReply([
+        ...smallFiles.map((file) => ({
+          path: file.path,
+          type: "blob",
+          size: 2000,
+        })),
+        { path: "late-large.png", type: "blob", size: 10_000_000 },
+      ]),
+  );
+  assert.deepEqual(findings, [
+    {
+      path: "late-large.png",
+      bytes: 10_000_000,
+      deltaBytes: 10_000_000,
+      status: "added",
+    },
+  ]);
+});
+
+test("scanAssetWeight: caps findings after ranking by size, not by PR file order", async () => {
+  const files = Array.from({ length: 51 }, (_, i) => ({
+    path: `asset-${i}.png`,
+    status: "added",
+  }));
+  const findings = await scanAssetWeight(
+    {
+      repoFullName: "o/r",
+      prNumber: 1,
+      headSha: HEAD_SHA,
+      githubToken: "t",
+      files,
+    },
+    async () =>
+      treeReply(
+        files.map((file, i) => ({
+          path: file.path,
+          type: "blob",
+          size: i === 50 ? 10_000_000 : 150000,
+        })),
+      ),
+  );
+  assert.equal(findings.length, 50);
+  assert.equal(findings[0].path, "asset-50.png");
+  assert.equal(findings[0].bytes, 10_000_000);
+});
+
 test("scanAssetWeight: flags a binary that GREW past the threshold (base vs head)", async () => {
   const fetchImpl = async (url) =>
     String(url).includes(BASE_SHA)
@@ -1698,6 +1759,39 @@ test("scanAssetWeight: missing baseSha does not reclassify modified binaries as 
     async () => treeReply([{ path: "video.mp4", type: "blob", size: 250000 }]),
   );
   assert.deepEqual(findings, []);
+});
+
+test("buildBrief: asset-weight degrades instead of trusting truncated tree responses", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) =>
+    String(url).includes("git/trees")
+      ? String(url).includes(BASE_SHA)
+        ? {
+            ok: true,
+            json: async () => ({
+              truncated: true,
+              tree: [{ path: "big.png", type: "blob", size: 50000 }],
+            }),
+          }
+        : treeReply([{ path: "big.png", type: "blob", size: 300000 }])
+      : { ok: true, json: async () => ({}) };
+  try {
+    const brief = await buildBrief({
+      repoFullName: "o/r",
+      prNumber: 1,
+      headSha: HEAD_SHA,
+      baseSha: BASE_SHA,
+      githubToken: "t",
+      files: [{ path: "big.png", status: "modified" }],
+      analyzers: ["assetWeight"],
+    });
+    assert.equal(brief.partial, true);
+    assert.equal(brief.analyzerStatus.assetWeight, "degraded");
+    assert.equal(brief.findings.assetWeight, undefined);
+    assert.doesNotMatch(brief.promptSection, /Heavy binary assets/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 test("scanAssetWeight: fail-safe — no token, no binaries, or failed fetch returns []", async () => {
