@@ -1717,23 +1717,29 @@ test("renderBrief: renders the asset-weight block with human-readable sizes", ()
   assert.match(r.promptSection, /`v\.mp4` grows \+195 KB to 293 KB/);
 });
 
-test("buildBrief: asset-weight analyzer runs", async () => {
+test("buildBrief: asset-weight analyzer reports grown binaries from request file status", async () => {
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (url) =>
     String(url).includes("git/trees")
-      ? treeReply([{ path: "big.png", type: "blob", size: 300000 }])
+      ? String(url).includes(BASE_SHA)
+        ? treeReply([{ path: "big.png", type: "blob", size: 50000 }])
+        : treeReply([{ path: "big.png", type: "blob", size: 300000 }])
       : { ok: true, json: async () => ({}) };
   try {
     const brief = await buildBrief({
       repoFullName: "o/r",
       prNumber: 1,
       headSha: HEAD_SHA,
+      baseSha: BASE_SHA,
       githubToken: "t",
-      files: [{ path: "big.png", status: "added" }],
+      files: [{ path: "big.png", status: "modified" }],
     });
     assert.equal(brief.analyzerStatus.assetWeight, "ok");
     assert.equal(brief.findings.assetWeight.length, 1);
+    assert.equal(brief.findings.assetWeight[0].status, "grown");
+    assert.equal(brief.findings.assetWeight[0].deltaBytes, 250000);
     assert.match(brief.promptSection, /Heavy binary assets/);
+    assert.match(brief.promptSection, /grows/);
   } finally {
     globalThis.fetch = realFetch;
   }
