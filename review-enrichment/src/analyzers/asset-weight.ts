@@ -3,7 +3,8 @@
 // the patch, so this is the one analyzer that needs the GitHub API: the git tree at headSha (and baseSha, for
 // modified files) is fetched with the request's short-lived token — one recursive call returns every blob's size,
 // which also sidesteps the Contents API's 1 MB cap. Pure size arithmetic after that; no external service.
-// Fail-safe: returns [] without a token/headSha or when the tree fetch is not OK.
+// Fail-safe: returns [] without a token/headSha or when the head tree fetch is not OK; growth findings require a
+// matching base size.
 import type { EnrichRequest, AssetWeightFinding } from "../types.js";
 
 const MAX_FILES = 50; // cap binary files inspected per PR
@@ -128,7 +129,7 @@ async function fetchTreeSizes(
 }
 
 /** Analyzer entrypoint: flag heavy binary assets the PR adds or grows past the threshold. Pure size arithmetic over
- *  the GitHub git tree; fail-safe (returns [] without a token or on a failed tree fetch). */
+ *  the GitHub git tree; fail-safe (returns [] without a token or on a failed head tree fetch). */
 export async function scanAssetWeight(
   req: EnrichRequest,
   fetchImpl: typeof fetch = fetch,
@@ -171,15 +172,29 @@ export async function scanAssetWeight(
   for (const file of binaries) {
     const bytes = headSizes.get(file.path);
     if (typeof bytes !== "number") continue;
-    const baseBytes = baseSizes.get(file.path) ?? 0;
-    const isNew = baseBytes === 0;
-    const deltaBytes = bytes - baseBytes;
-    if (isNew ? bytes >= THRESHOLD_BYTES : deltaBytes >= THRESHOLD_BYTES) {
+
+    if (file.status === "added") {
+      if (bytes >= THRESHOLD_BYTES) {
+        findings.push({
+          path: file.path,
+          bytes,
+          deltaBytes: bytes,
+          status: "added",
+        });
+      }
+      continue;
+    }
+
+    if (file.status === "modified" || file.status === "changed") {
+      const baseBytes = baseSizes.get(file.path);
+      if (typeof baseBytes !== "number") continue;
+      const deltaBytes = bytes - baseBytes;
+      if (deltaBytes < THRESHOLD_BYTES) continue;
       findings.push({
         path: file.path,
         bytes,
         deltaBytes,
-        status: isNew ? "added" : "grown",
+        status: "grown",
       });
     }
   }

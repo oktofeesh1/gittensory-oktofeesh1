@@ -1653,6 +1653,53 @@ test("buildBrief: provenance analyzer runs, flags binary file and missing npm at
   }
 });
 
+test("scanAssetWeight: failed base fetch does not reclassify modified binaries as added", async () => {
+  const findings = await scanAssetWeight(
+    {
+      repoFullName: "o/r",
+      prNumber: 1,
+      headSha: HEAD_SHA,
+      baseSha: BASE_SHA,
+      githubToken: "t",
+      files: [
+        { path: "video.mp4", status: "modified" },
+        { path: "clip.mov", status: "changed" },
+        { path: "poster.png", status: "added" },
+      ],
+    },
+    async (url) =>
+      String(url).includes(BASE_SHA)
+        ? { ok: false, json: async () => ({}) }
+        : treeReply([
+            { path: "video.mp4", type: "blob", size: 250000 },
+            { path: "clip.mov", type: "blob", size: 260000 },
+            { path: "poster.png", type: "blob", size: 270000 },
+          ]),
+  );
+  assert.deepEqual(findings, [
+    {
+      path: "poster.png",
+      bytes: 270000,
+      deltaBytes: 270000,
+      status: "added",
+    },
+  ]);
+});
+
+test("scanAssetWeight: missing baseSha does not reclassify modified binaries as added", async () => {
+  const findings = await scanAssetWeight(
+    {
+      repoFullName: "o/r",
+      prNumber: 1,
+      headSha: HEAD_SHA,
+      githubToken: "t",
+      files: [{ path: "video.mp4", status: "modified" }],
+    },
+    async () => treeReply([{ path: "video.mp4", type: "blob", size: 250000 }]),
+  );
+  assert.deepEqual(findings, []);
+});
+
 test("scanAssetWeight: fail-safe — no token, no binaries, or failed fetch returns []", async () => {
   const tree = async () =>
     treeReply([{ path: "a.png", type: "blob", size: 999999 }]);
