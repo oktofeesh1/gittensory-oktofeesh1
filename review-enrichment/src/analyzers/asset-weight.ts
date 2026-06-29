@@ -82,8 +82,7 @@ type EnrichFile = NonNullable<EnrichRequest["files"]>[number];
 
 function basePathForGrowth(file: EnrichFile): string | null {
   if (file.status === "modified" || file.status === "changed") return file.path;
-  if (file.status === "renamed" || file.status === "copied")
-    return file.previousPath || null;
+  if (file.status === "renamed") return file.previousPath || null;
   return null;
 }
 
@@ -237,7 +236,7 @@ export async function scanAssetWeight(
     const bytes = headSizes.get(file.path);
     if (typeof bytes !== "number") continue;
 
-    if (file.status === "added") {
+    if (file.status === "added" || file.status === "copied") {
       if (bytes >= THRESHOLD_BYTES) {
         findings.push({
           path: file.path,

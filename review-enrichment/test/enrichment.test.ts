@@ -1652,11 +1652,11 @@ test("scanAssetWeight: flags a renamed binary that grew using its previous path"
   ]);
 });
 
-test("scanAssetWeight: flags a copied binary that grew using its previous path", async () => {
-  const fetchImpl = async (url) =>
-    String(url).includes(BASE_SHA)
-      ? treeReply([{ path: "old/data.bin", type: "blob", size: 50000 }])
-      : treeReply([{ path: "copy/data.bin", type: "blob", size: 260000 }]);
+test("scanAssetWeight: flags a copied binary as an added heavy path", async () => {
+  const fetchImpl = async (url) => {
+    assert.doesNotMatch(String(url), new RegExp(BASE_SHA));
+    return treeReply([{ path: "copy/data.bin", type: "blob", size: 10485760 }]);
+  };
   const findings = await scanAssetWeight(
     {
       repoFullName: "o/r",
@@ -1677,9 +1677,9 @@ test("scanAssetWeight: flags a copied binary that grew using its previous path",
   assert.deepEqual(findings, [
     {
       path: "copy/data.bin",
-      bytes: 260000,
-      deltaBytes: 210000,
-      status: "grown",
+      bytes: 10485760,
+      deltaBytes: 10485760,
+      status: "added",
     },
   ]);
 });
