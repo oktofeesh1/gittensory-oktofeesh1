@@ -70,7 +70,10 @@ describe("resolveHealthVersion (#2077)", () => {
 
 function expectDurations(result: Awaited<ReturnType<typeof readiness>>, names: string[]): void {
   expect(Object.keys(result.durationsMs).sort()).toEqual([...names].sort());
-  for (const name of names) expect(result.durationsMs[name]).toEqual(expect.any(Number));
+  for (const name of names) {
+    expect(Number.isFinite(result.durationsMs[name])).toBe(true);
+    expect(result.durationsMs[name]).toBeGreaterThanOrEqual(0);
+  }
 }
 
 describe("sqliteBackupAdvisory (#8 data-safety)", () => {
@@ -151,14 +154,23 @@ describe("readiness (#982)", () => {
     expectDurations(result, ["db", "migrations", "qdrant"]);
   });
 
-  it("records per-probe durations for db, migrations, false probes, and throwing probes (#2078)", async () => {
+  it("records monotonic per-probe durations for db, migrations, false probes, and throwing probes (#2078)", async () => {
     const driver = nodeSqliteDriver(new DatabaseSync(":memory:") as never);
     const db = createD1Adapter(driver);
     driver.exec("CREATE TABLE _selfhost_migrations (name TEXT, applied_at INTEGER)");
     driver.query("INSERT INTO _selfhost_migrations (name, applied_at) VALUES (?, ?)", ["0001", 0]);
     vi.spyOn(Date, "now")
+      .mockReturnValueOnce(5000)
       .mockReturnValueOnce(1000)
-      .mockReturnValueOnce(999)
+      .mockReturnValueOnce(5000)
+      .mockReturnValueOnce(1000)
+      .mockReturnValueOnce(5000)
+      .mockReturnValueOnce(1000)
+      .mockReturnValueOnce(5000)
+      .mockReturnValueOnce(1000);
+    vi.spyOn(performance, "now")
+      .mockReturnValueOnce(1000)
+      .mockReturnValueOnce(1004)
       .mockReturnValueOnce(2000)
       .mockReturnValueOnce(2007)
       .mockReturnValueOnce(3000)
@@ -179,7 +191,7 @@ describe("readiness (#982)", () => {
     expect(result).toEqual({
       ok: false,
       checks: { db: true, migrations: true, redis: false, qdrant: false },
-      durationsMs: { db: 0, migrations: 7, redis: 2, qdrant: 9 },
+      durationsMs: { db: 4, migrations: 7, redis: 2, qdrant: 9 },
     });
   });
 });

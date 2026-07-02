@@ -55,13 +55,13 @@ async function timedReadinessCheck(
   durationsMs: Record<string, number>,
   check: () => Promise<boolean>,
 ): Promise<boolean> {
-  const startedAt = Date.now();
+  const startedAt = performance.now();
   try {
     return await check();
   } catch {
     return false;
   } finally {
-    durationsMs[name] = Math.max(0, Date.now() - startedAt);
+    durationsMs[name] = Math.max(0, performance.now() - startedAt);
   }
 }
 
