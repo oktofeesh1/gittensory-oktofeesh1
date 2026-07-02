@@ -110,7 +110,11 @@ jobs:
             if docker exec gt-redis redis-cli ping | grep -q PONG; then break; fi
             sleep 1
           done
-          docker run -d --name gt --network gt-smoke -p 8787:8787 -e REDIS_URL=redis://gt-redis:6379 gittensory:selfhost-ci
+          docker run -d --name gt --network gt-smoke -p 8787:8787 \
+            -e REDIS_URL=redis://gt-redis:6379 \
+            -e SELFHOST_SETUP_TOKEN=selfhost-ci-setup-token \
+            -e PUBLIC_API_ORIGIN=https://selfhost-ci.example \
+            gittensory:selfhost-ci
           ok=0
           for _ in $(seq 1 30); do
             if curl -sf http://127.0.0.1:8787/health >/dev/null; then ok=1; break; fi
