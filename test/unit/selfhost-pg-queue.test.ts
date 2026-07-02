@@ -508,6 +508,10 @@ describe("createPgQueue (durable #977)", () => {
     m.enqueueJob("1", {
       type: "github-webhook",
       traceParent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+      payload: {
+        repository: { full_name: "JSONbored/gittensory" },
+        pull_request: { number: 1629 },
+      },
     });
     const q = createPgQueue(m.pool, async () => undefined);
 
@@ -516,6 +520,8 @@ describe("createPgQueue (durable #977)", () => {
 
     const audit = writes.find((line) => line.includes('"event":"job_complete"'));
     expect(JSON.parse(audit!) as Record<string, unknown>).toMatchObject({
+      repo: "JSONbored/gittensory",
+      pr_number: 1629,
       trace_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     });
   });

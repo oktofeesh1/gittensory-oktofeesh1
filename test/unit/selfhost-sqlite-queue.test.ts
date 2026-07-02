@@ -98,6 +98,8 @@ describe("createSqliteQueue (durable #980)", () => {
 
     const audit = writes.find((line) => line.includes('"event":"job_complete"'));
     expect(JSON.parse(audit!) as Record<string, unknown>).toMatchObject({
+      repo: "JSONbored/gittensory",
+      pr_number: 1629,
       trace_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     });
   });

@@ -3,7 +3,7 @@
 // app instances sharing one Postgres can claim jobs concurrently without double-processing. size()/deadCount()
 // are async (the metrics gauges accept async samplers).
 import type { Pool } from "pg";
-import { logAudit, extractPayloadType } from "./audit";
+import { logAudit, extractPayloadType, extractPayloadContext } from "./audit";
 import { incr } from "./metrics";
 import { withReviewSpan } from "./tracing";
 import { withOtelSpan } from "./otel";
@@ -385,6 +385,7 @@ export function createPgQueue(
         return true;
       }
       const jobTraceParent = message.type === "github-webhook" ? message.traceParent : undefined;
+      const payloadContext = extractPayloadContext(job.payload);
       const rateLimitAdmission = await rateLimitAdmissionDelayMs(message);
       if (rateLimitAdmission !== null) {
         const rateLimitMetric = githubRateLimitMetricContext(message, rateLimitAdmission);
@@ -437,6 +438,7 @@ export function createPgQueue(
           ts: Date.now(),
           job_id: job.id,
           payload_type: extractPayloadType(job.payload),
+          ...payloadContext,
           latency_ms: Date.now() - claimedAt,
           attempts: Number(job.attempts) + 1,
         }, jobTraceParent);
@@ -477,6 +479,7 @@ export function createPgQueue(
             ts: Date.now(),
             job_id: job.id,
             payload_type: extractPayloadType(job.payload),
+            ...payloadContext,
             latency_ms: Date.now() - claimedAt,
             attempts,
             retry_after_ms: Math.max(0, retryAfter - Date.now()),
@@ -505,6 +508,7 @@ export function createPgQueue(
             ts: Date.now(),
             job_id: job.id,
             payload_type: extractPayloadType(job.payload),
+            ...payloadContext,
             latency_ms: Date.now() - claimedAt,
             attempts,
             error: errMsg,
@@ -527,6 +531,7 @@ export function createPgQueue(
             ts: Date.now(),
             job_id: job.id,
             payload_type: extractPayloadType(job.payload),
+            ...payloadContext,
             latency_ms: Date.now() - claimedAt,
             attempts,
             error: errMsg,

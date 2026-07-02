@@ -4,7 +4,7 @@
 // backing store differs. Single-process model: node:sqlite is synchronous + serial, so claim (SELECT→UPDATE)
 // is atomic with no row-lock dance.
 import type { SqliteDriver } from "./d1-adapter";
-import { logAudit, extractPayloadType } from "./audit";
+import { logAudit, extractPayloadType, extractPayloadContext } from "./audit";
 import { incr } from "./metrics";
 import { withReviewSpan } from "./tracing";
 import { withOtelSpan } from "./otel";
@@ -325,6 +325,7 @@ export function createSqliteQueue(
         return true;
       }
       const jobTraceParent = message.type === "github-webhook" ? message.traceParent : undefined;
+      const payloadContext = extractPayloadContext(job.payload);
       const rateLimitAdmission = rateLimitAdmissionDelayMs(driver, message);
       if (rateLimitAdmission !== null) {
         const rateLimitMetric = githubRateLimitMetricContext(message, rateLimitAdmission);
@@ -377,6 +378,7 @@ export function createSqliteQueue(
           ts: Date.now(),
           job_id: job.id,
           payload_type: extractPayloadType(job.payload),
+          ...payloadContext,
           latency_ms: Date.now() - claimedAt,
           attempts: job.attempts + 1,
         }, jobTraceParent);
@@ -417,6 +419,7 @@ export function createSqliteQueue(
             ts: Date.now(),
             job_id: job.id,
             payload_type: extractPayloadType(job.payload),
+            ...payloadContext,
             latency_ms: Date.now() - claimedAt,
             attempts,
             retry_after_ms: Math.max(0, retryAfter - Date.now()),
@@ -445,6 +448,7 @@ export function createSqliteQueue(
             ts: Date.now(),
             job_id: job.id,
             payload_type: extractPayloadType(job.payload),
+            ...payloadContext,
             latency_ms: Date.now() - claimedAt,
             attempts,
             error: errMsg,
@@ -467,6 +471,7 @@ export function createSqliteQueue(
             ts: Date.now(),
             job_id: job.id,
             payload_type: extractPayloadType(job.payload),
+            ...payloadContext,
             latency_ms: Date.now() - claimedAt,
             attempts,
             error: errMsg,

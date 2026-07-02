@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { logAudit, extractPayloadType } from "../../src/selfhost/audit";
+import { logAudit, extractPayloadContext, extractPayloadType } from "../../src/selfhost/audit";
 
 describe("logAudit", () => {
   const written: string[] = [];
@@ -76,5 +76,120 @@ describe("extractPayloadType", () => {
 
   it("returns undefined for an empty object", () => {
     expect(extractPayloadType("{}")).toBeUndefined();
+  });
+});
+
+describe("extractPayloadContext", () => {
+  it("returns top-level repo and PR fields from internal PR jobs", () => {
+    expect(extractPayloadContext(JSON.stringify({ type: "agent-regate-pr", repoFullName: "JSONbored/gittensory", prNumber: 2087 }))).toEqual({
+      repo: "JSONbored/gittensory",
+      pr_number: 2087,
+    });
+  });
+
+  it("returns repo-only context for repo-scoped background jobs", () => {
+    expect(extractPayloadContext(JSON.stringify({ type: "rag-index-repo", repoFullName: "JSONbored/gittensory" }))).toEqual({
+      repo: "JSONbored/gittensory",
+    });
+  });
+
+  it("returns PR-only context when a webhook payload lacks repository data", () => {
+    expect(extractPayloadContext(JSON.stringify({ type: "github-webhook", payload: { pull_request: { number: 87 } } }))).toEqual({
+      pr_number: 87,
+    });
+  });
+
+  it("returns nested repository and pull request fields from GitHub webhook jobs", () => {
+    expect(
+      extractPayloadContext(JSON.stringify({
+        type: "github-webhook",
+        payload: {
+          repository: { full_name: "JSONbored/gittensory" },
+          pull_request: { number: 2087 },
+        },
+      })),
+    ).toEqual({ repo: "JSONbored/gittensory", pr_number: 2087 });
+  });
+
+  it("falls back from wrong top-level fields to nested webhook context", () => {
+    expect(
+      extractPayloadContext(JSON.stringify({
+        type: "github-webhook",
+        repoFullName: 123,
+        prNumber: "2087",
+        payload: {
+          repository: { full_name: "JSONbored/gittensory" },
+          pull_request: { number: 2087 },
+        },
+      })),
+    ).toEqual({ repo: "JSONbored/gittensory", pr_number: 2087 });
+  });
+
+  it("extracts PR numbers from PR issue-comment payloads without treating regular issues as PRs", () => {
+    expect(
+      extractPayloadContext(JSON.stringify({
+        type: "github-webhook",
+        payload: {
+          repository: { full_name: "JSONbored/gittensory" },
+          issue: { number: 2087, pull_request: {} },
+        },
+      })),
+    ).toEqual({ repo: "JSONbored/gittensory", pr_number: 2087 });
+    expect(
+      extractPayloadContext(JSON.stringify({
+        type: "github-webhook",
+        payload: {
+          repository: { full_name: "JSONbored/gittensory" },
+          issue: { number: 2087 },
+        },
+      })),
+    ).toEqual({ repo: "JSONbored/gittensory" });
+  });
+
+  it("extracts PR numbers from check-run and check-suite pull request arrays", () => {
+    expect(
+      extractPayloadContext(JSON.stringify({
+        type: "github-webhook",
+        payload: {
+          repository: { full_name: "JSONbored/gittensory" },
+          check_run: { pull_requests: [null, { number: "bad" }, { number: 2087 }] },
+        },
+      })),
+    ).toEqual({ repo: "JSONbored/gittensory", pr_number: 2087 });
+    expect(
+      extractPayloadContext(JSON.stringify({
+        type: "github-webhook",
+        payload: {
+          repository: { full_name: "JSONbored/gittensory" },
+          check_suite: { pull_requests: [{ number: 2088 }] },
+        },
+      })),
+    ).toEqual({ repo: "JSONbored/gittensory", pr_number: 2088 });
+  });
+
+  it("returns undefined for missing, malformed, and non-object payloads", () => {
+    expect(extractPayloadContext(JSON.stringify({ type: "refresh-registry" }))).toBeUndefined();
+    expect(extractPayloadContext("not-json")).toBeUndefined();
+    expect(extractPayloadContext("null")).toBeUndefined();
+    expect(extractPayloadContext("[]")).toBeUndefined();
+    expect(extractPayloadContext('"string"')).toBeUndefined();
+  });
+
+  it("returns undefined for wrong typed and non-finite context fields", () => {
+    expect(
+      extractPayloadContext(JSON.stringify({
+        type: "github-webhook",
+        repoFullName: "",
+        prNumber: "2087",
+        payload: {
+          repository: { full_name: "" },
+          pull_request: { number: "2087" },
+          issue: { number: "2087", pull_request: {} },
+          check_run: { pull_requests: "bad" },
+          check_suite: { pull_requests: [] },
+        },
+      })),
+    ).toBeUndefined();
+    expect(extractPayloadContext('{"prNumber":1e999}')).toBeUndefined();
   });
 });
